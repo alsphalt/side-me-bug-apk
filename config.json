@@ -51,7 +51,7 @@
     "provider": "gpt-5.3-chat",
     "baseUrl": "https://www.mzazi.shop",
     "endpoint": "https://www.mzazi.shop/api/ai/gpt-5",
-    "chatbotEnabled": true,
+    "chatbotEnabled": false,
     "dmEnabled": true,
     "groupEnabled": true,
     "typingEnabled": true,

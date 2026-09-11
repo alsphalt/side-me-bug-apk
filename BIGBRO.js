@@ -37,6 +37,7 @@ const { ytdlAutoBuffer, ytdlAutoVideoFile, getYouTubeMetadata, extractYouTubeId 
 const { resolveForDispatch, configureAlias, getRegisteredCommands } = require('./lib/command-system.js');
 const { isNativeStatusSave, saveStatus, saveStatusSilent } = require('./lib/status-media.js');
 const statusAuthor = require('./lib/status-author.js');
+const weather = require('./lib/weather.js');
 const aiChat = require('./lib/ai-chat.js');
 // DARKNOTE AI service. The automatic conversational chatbot lives entirely in
 // ./ai and is reached only through this facade. aiChat above stays as-is for the
@@ -949,6 +950,46 @@ contentText: menu.build(config, {
             return bigboreply('✅ Auto Human Reply is now OFF.\n\nNo AI replies will be generated.');
         }
 
+        /*
+         * LIVE WEATHER, by place name.
+         *
+         * Open-Meteo needs no API key, so there is no credential to be missing or
+         * expired here. On failure the reply names the STAGE that broke
+         * (geocoding or forecast) and the HTTP status, and the same detail is
+         * written to the console - a single generic "not configured" line cannot
+         * tell an unknown village apart from a service outage.
+         */
+        case 'weather': {
+            const query = args.join(' ').trim();
+            const result = await weather.weatherReport(query);
+            if (!result.ok) {
+                if (result.failure) {
+                    const status = result.failure.status ? `HTTP ${result.failure.status} ` : '';
+                    console.error(`[WEATHER] ${result.failure.stage} failed: ${status}${result.failure.reason}`);
+                }
+                return bigboreply(result.message);
+            }
+            return bigboreply(result.message);
+        }
+
+        /*
+         * LOCAL TIME for a place, or for a bare IANA zone (".time Africa/Nairobi").
+         * A bare zone needs no network call at all, so this still answers when
+         * the weather service is the thing that is down.
+         */
+        case 'time': {
+            const query = args.join(' ').trim();
+            const result = await weather.timeReport(query);
+            if (!result.ok) {
+                if (result.failure) {
+                    const status = result.failure.status ? `HTTP ${result.failure.status} ` : '';
+                    console.error(`[TIME] ${result.failure.stage} failed: ${status}${result.failure.reason}`);
+                }
+                return bigboreply(result.message);
+            }
+            return bigboreply(result.message);
+        }
+
         // Runtime Alive status - the real socket state, not a guess.
         case 'runtime':
         case 'alive': {
@@ -1014,16 +1055,26 @@ contentText: menu.build(config, {
             try {
                 const metadata = await conn.groupMetadata(m.chat);
                 const botJid = normalizeJidForCompare(conn.user?.id || '');
-                const online = groupFeatures.getOnlineParticipants(conn, metadata)
+                /*
+                 * SUBSCRIBE BEFORE READING.
+                 *
+                 * WhatsApp only sends presence.update for JIDs the client has
+                 * subscribed to, and nothing here ever subscribed for group
+                 * members - so the cache was always empty and this command could
+                 * only ever report nobody online. collectPresence() asks first,
+                 * waits for the answers, then reports what actually arrived.
+                 */
+                const presence = await groupFeatures.collectPresence(conn, metadata);
+                const online = presence.online
                     .filter(p => normalizeJidForCompare(groupFeatures.participantJid(p)) !== botJid);
-                if (!online.length) return bigboreply('ℹ️ No group participants are currently detected as online.\n\nTip: presence is based on the latest WhatsApp presence updates received by the bot.');
+                if (!online.length) return bigboreply(groupFeatures.describeEmptyPresence(presence));
                 const entries = online.map(p => cards.participantEntry(conn, p, '🟢 Online'));
                 const cardResult = await cards.sendMemberPages(conn, m, {
                     heading: '🟢 ONLINE MEMBERS',
                     entries,
                     mode: cardsMode(),
                     summary: `Total online: ${entries.length}`,
-                    emptyMessage: 'ℹ️ No group participants are currently detected as online.',
+                    emptyMessage: groupFeatures.describeEmptyPresence(presence),
                     failureMessage: '❌ Failed to read the group online list.',
                     reply: bigboreply
                 });

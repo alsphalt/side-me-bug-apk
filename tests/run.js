@@ -19,7 +19,9 @@ const suites = [
     require('./autohuman.test'),
     require('./timing.test'),
     require('./status-author.test'),
-    require('./ytdl-stream.test')
+    require('./ytdl-stream.test'),
+    require('./weather.test'),
+    require('./presence.test')
 ]
 
 ;(async () => {
