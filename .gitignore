@@ -28,3 +28,9 @@ database/
 # never be committed either. Written as a glob because the controller creates one
 # directory per Telegram user (auth_tg_<userId>).
 auth_tg_*/
+
+# Sessions paired from Telegram. Each holds a full set of Baileys credentials
+# for a linked WhatsApp account, exactly like auth/ and auth_tg_*/ above - so
+# they must never be committed either. Created by lib/sessions.js, one directory
+# per session.
+sessions/
