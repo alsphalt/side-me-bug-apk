@@ -206,6 +206,49 @@ function classifyOpenAI(status, json, raw) {
 const PROVIDERS = [
     {
         /*
+         * GPT-5.3 CHAT — the model the owner selected, on the same gateway as
+         * the rest of the pool.
+         *
+         * MEASURED 2026-09-12 with the owner's own key:
+         *   - 302 characters accepted, 312 rejected with INVALID_PARAMETER, so
+         *     this shares the same 302-character GATEWAY cap as every other
+         *     ?prompt= provider. It is not a larger model window.
+         *   - 5 of 6 calls answered cleanly in 1.7-7.4s. The one failure was a
+         *     504 PROVIDER_TIMEOUT on a cold first call, which is why the pool
+         *     stays behind it as a fallback rather than being replaced.
+         *   - Envelope is the standard one: { status: true, result: { answer } }.
+         */
+        id: 'gpt-5.3-chat',
+        label: 'GPT-5.3 Chat',
+        endpointPath: '/api/ai/gpt-5.3-chat',
+        method: 'GET',
+        authStyle: 'query',
+        parameter: 'prompt',
+        envelope: 'standard',
+        measured: {
+            promptLimit: 302,
+            reliability: '5/6',
+            latencyMs: '1.7-7.4s',
+            verifiedOn: '2026-09-12',
+            notes: '302 accepted, 312 rejected INVALID_PARAMETER - same gateway cap as the ?prompt= family. One 504 on a cold first call.'
+        },
+        capabilities: textOnlyCapabilities({ maxPromptChars: 302 }),
+        /*
+         * Highest priorities among the 302-capped providers, so it leads the
+         * fallback order whenever it is not explicitly configured. longcontext
+         * stays at 0 because its 302-character cap cannot serve a long prompt -
+         * the router reads that to route long input to the POST endpoint.
+         */
+        priority: { casual: 96, general: 97, reasoning: 97, coding: 96, translation: 92, longcontext: 0, default: 96 },
+        buildRequest(prompt, settings) {
+            return { url: `${settings.baseUrl}${this.endpointPath}?prompt=${encodeURIComponent(prompt)}&apikey=${encodeURIComponent(settings.apiKey)}`, method: 'GET' }
+        },
+        extract: extractStandard,
+        classify: classifyStandard,
+        urlIsSecretFree: false
+    },
+    {
+        /*
          * CHATGPT (OpenAI) — the owner's own OpenAI account.
          *
          * This is the ONLY provider in this file that is not the mzazi gateway,

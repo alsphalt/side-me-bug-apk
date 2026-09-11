@@ -16,7 +16,8 @@ const suites = [
     require('./ai-providers.test'),
     require('./ai-router.test'),
     require('./menu.test'),
-    require('./autohuman.test')
+    require('./autohuman.test'),
+    require('./timing.test')
 ]
 
 ;(async () => {

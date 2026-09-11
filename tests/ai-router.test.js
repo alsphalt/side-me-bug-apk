@@ -63,6 +63,34 @@ module.exports = async function routerSuite({ section, ok }) {
                 calls[0]?.body?.messages?.[0]?.content === 'hello there', JSON.stringify(calls[0]?.body))
         }
 
+        section('ai/router -- the configured model is the one that answers')
+
+        {
+            /*
+             * This mirrors the owner's real configuration: config.json sets
+             * ai.provider to 'gpt-5.3-chat'. Pool providers authenticate with the
+             * shared MZAZI_API_KEY in the query string, so the request must carry
+             * that key and no Bearer header.
+             */
+            const calls = []
+            const router = makeRouter(async request => {
+                calls.push(request)
+                return /gpt-5\.3-chat/.test(request.url)
+                    ? { status: 200, json: { status: true, creator: 'MZAZI TECH', result: { answer: 'OK' } }, ms: 700 }
+                    : poolAnswer()
+            })
+
+            const result = await router.ask('hello there', { ...settings, provider: 'gpt-5.3-chat' }, {})
+
+            ok('gpt-5.3-chat answers', result.ok === true && result.provider === 'gpt-5.3-chat', JSON.stringify(result))
+            ok('the request went to the mzazi gpt-5.3-chat endpoint',
+                /^https:\/\/www\.mzazi\.shop\/api\/ai\/gpt-5\.3-chat\?/.test(calls[0]?.url || ''), calls[0]?.url)
+            ok('the shared key travelled in the query string',
+                String(calls[0]?.url || '').includes('apikey=mzazi-pool-key'), String(calls[0]?.url))
+            ok('no Authorization header was sent (this family uses ?apikey=)',
+                !calls[0]?.headers?.authorization)
+        }
+
         section('ai/router -- the configured provider really is forced')
 
         {

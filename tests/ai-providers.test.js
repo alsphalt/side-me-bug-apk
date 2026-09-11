@@ -8,6 +8,62 @@
 const providers = require('../ai/providers')
 
 module.exports = function providersSuite({ section, ok, eq }) {
+    section('ai/providers -- GPT-5.3 Chat (the owner\'s configured model)')
+
+    const gpt53 = providers.getProvider('gpt-5.3-chat')
+    ok('the gpt-5.3-chat provider is registered', Boolean(gpt53))
+    if (gpt53) {
+        eq('it routes to the mzazi gpt-5.3-chat endpoint', gpt53.endpointPath, '/api/ai/gpt-5.3-chat')
+        eq('it is a GET provider (the ?prompt= family)', gpt53.method, 'GET')
+        eq('it sends the prompt in ?prompt=', gpt53.parameter, 'prompt')
+        /*
+         * MEASURED, not assumed: 302 characters was accepted and 312 was
+         * rejected with INVALID_PARAMETER, so it shares the same gateway cap as
+         * the rest of the family. It must not be advertised as a long-context
+         * provider, or the router would send it prompts it cannot take.
+         */
+        eq('its prompt cap is the measured 302', gpt53.capabilities.maxPromptChars, 302)
+        eq('it records the measurement date', gpt53.measured.verifiedOn, '2026-09-12')
+        eq('it records the measured limit', gpt53.measured.promptLimit, 302)
+        ok('longcontext priority is 0 (a 302 cap cannot serve long input)',
+            gpt53.priority.longcontext === 0, String(gpt53.priority.longcontext))
+        ok('it declares text chat only',
+            gpt53.capabilities.textChat === true
+            && gpt53.capabilities.imageUnderstanding === false
+            && gpt53.capabilities.imageGeneration === false)
+
+        const built = gpt53.buildRequest('what are u doing?', {
+            baseUrl: 'https://www.mzazi.shop',
+            apiKey: 'mzazi_test'
+        })
+        eq('the request URL is the pool gateway plus its own path',
+            built.url,
+            `https://www.mzazi.shop/api/ai/gpt-5.3-chat?prompt=${encodeURIComponent('what are u doing?')}&apikey=mzazi_test`)
+        eq('it is a GET', built.method, 'GET')
+
+        section('ai/providers -- GPT-5.3 Chat envelope (measured responses)')
+
+        eq('extracts the answer from the standard envelope',
+            providers.extractStandard({ status: true, creator: 'MZAZI TECH', result: { answer: 'PROBE OK' } }),
+            'PROBE OK')
+        eq('an error envelope is not an answer',
+            providers.extractStandard({ status: false, error: 'INVALID_API_KEY', message: 'The provided API key is invalid.' }),
+            null)
+
+        const badKey = gpt53.classify(401, { status: false, error: 'INVALID_API_KEY', message: 'The provided API key is invalid.' }, '')
+        ok('401 INVALID_API_KEY is an auth error', badKey.authError === true)
+
+        const limited = gpt53.classify(429, { status: false, error: 'RATE_LIMITED', message: 'Rate limit exceeded. Please try again later.' }, '')
+        ok('429 RATE_LIMITED is a rate limit', limited.rateLimited === true)
+        ok('429 is not treated as an auth error', limited.authError === false)
+
+        const tooLong = gpt53.classify(400, { status: false, error: 'INVALID_PARAMETER', message: 'The prompt is too long.' }, '')
+        ok('INVALID_PARAMETER with "too long" is promptTooLong', tooLong.promptTooLong === true)
+
+        const timeout = gpt53.classify(504, { status: false, error: 'PROVIDER_TIMEOUT' }, '')
+        ok('504 is a server error', timeout.serverError === true)
+    }
+
     section('ai/providers -- ChatGPT (OpenAI) registration')
 
     const openai = providers.getProvider('openai')
