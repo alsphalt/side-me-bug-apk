@@ -1,0 +1,171 @@
+{
+  "ownerNumber": "254107287140",
+  "ownerJid": "254107287140@s.whatsapp.net",
+  "botName": "DARKNOTE L2",
+  "pairingCode": "DARKNOTE",
+  "cards": {
+    "mode": "auto",
+    "image": "./src/img/menu.jpg"
+  },
+  "shazam": {
+    "results": 5,
+    "maxVideoBytes": 67108864
+  },
+  "instagram": {
+    "endpoint": "https://aemt.me/download/igstalk?username={username}",
+    "timeoutMs": 20000
+  },
+  "protectedBlockJids": [],
+  "mode": "public",
+  "prefix": ".",
+  "ownerName": "Bigbrother",
+  "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
+  "vv2Auto": false,
+  "anticall": false,
+  "antilink": "off",
+  "autoread": false,
+  "autotyping": true,
+  "autorecoding": false,
+  "antideleteSkipOwner": false,
+  "ai": {
+    "ownerShortDelay": 4,
+    "ownerNormalDelayMin": 5,
+    "ownerNormalDelayMax": 10,
+    "ownerLongDelayMin": 10,
+    "ownerLongDelayMax": 20,
+    "chatbotDelayMode": "short",
+    "chatbotDelayShort": 270,
+    "chatbotDelayLong": 630,
+    "replyDelayMode": "short",
+    "replyDelayShortMin": 5,
+    "replyDelayShortMax": 10,
+    "replyDelayLongMin": 15,
+    "replyDelayLongMax": 20,
+    "longSilenceMinutes": 90,
+    "followUpMaxPerSilence": 1,
+    "shortAckReaction": true,
+    "shortAckSilence": true,
+    "abuseSafetyEnabled": true,
+    "onlineCycleEnabled": false,
+    "onlineCycleMs": 0,
+    "provider": "router",
+    "baseUrl": "https://www.mzazi.shop",
+    "endpoint": "https://www.mzazi.shop/api/ai/gpt-5",
+    "chatbotEnabled": false,
+    "dmEnabled": true,
+    "groupEnabled": true,
+    "typingEnabled": true,
+    "memoryEnabled": true,
+    "responseTimingEnabled": true,
+    "languageEnabled": true,
+    "replyContextEnabled": true,
+    "combineEnabled": true,
+    "emojiEnabled": true,
+    "nameEnabled": true,
+    "reactionsEnabled": false,
+    "firstTurnDelay": true,
+    "dmDelay": 15,
+    "shortDelay": 4,
+    "normalDelayMin": 4,
+    "normalDelayMax": 10,
+    "longDelayMin": 13,
+    "longDelayMax": 20,
+    "groupDelayMin": 15,
+    "groupDelayMax": 17,
+    "maxMessageChars": 4000,
+    "maxContextTurns": 6,
+    "maxReplyChars": 3500,
+    "longPromptBudget": 880,
+    "repeatSimilarityThreshold": 0.72,
+    "summaryMaxChars": 120,
+    "maxFallbacks": 2,
+    "maxAttempts": 3,
+    "disabledProviders": [],
+    "healthFailureThreshold": 3,
+    "healthBaseCooldownMs": 60000,
+    "healthMaxCooldownMs": 900000,
+    "rateUserPerMinute": 6,
+    "rateGroupPerMinute": 12,
+    "batchWindowMs": 2500,
+    "timeoutMs": 60000,
+    "retries": 2,
+    "maxSessions": 800,
+    "sessionTtlDays": 30,
+    "modules": {
+      "assistant": false,
+      "moderation": false,
+      "rewrite": false,
+      "translate": false,
+      "files": false,
+      "web": false,
+      "vision": false,
+      "image": false,
+      "sticker": false,
+      "imagesearch": false
+    }
+  },
+  "cmdAliases": {
+    "254107287140": {}
+  },
+  "stickerCommands": {
+    "254107287140": {}
+  },
+  "sessionSettings": {
+    "254107287140": {
+      "antidelete": false,
+      "antidelete2": false,
+      "antidelete3": ""
+    },
+    "254700000001": {
+      "antidelete": true,
+      "antidelete2": true,
+      "antidelete3": ""
+    },
+    "254700000002": {
+      "antidelete": false,
+      "antidelete2": true,
+      "antidelete3": ""
+    }
+  },
+  "statusAutomation": {
+    "avs": {
+      "enabled": true
+    },
+    "als": {
+      "enabled": true
+    },
+    "ars": {
+      "enabled": true,
+      "emoji": "😊"
+    }
+  },
+  "antiFeatures": {
+    "antidemote": {
+      "enabled": false
+    },
+    "antikick": {
+      "enabled": false
+    },
+    "antiadd": {
+      "enabled": false
+    },
+    "antipromote": {
+      "enabled": false
+    },
+    "antisticker": {
+      "enabled": false
+    },
+    "antiviewonce": {
+      "enabled": false
+    },
+    "antimedia": {
+      "enabled": false
+    },
+    "antimentionstatus": {
+      "enabled": false
+    },
+    "enforcement": {
+      "kick": true
+    }
+  }
+}

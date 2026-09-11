@@ -1,0 +1,24 @@
+# Never commit secrets or runtime state.
+.env
+
+# Baileys session credentials - these grant full access to the paired account.
+auth/
+
+# Runtime scratch files.
+node_modules/
+tmp/
+*.log
+
+# The bot writes its runtime stores here (owner.json, ai-sessions.json,
+# group-activity.json, sticker-commands.json ...). Uncomment the next line if you
+# do not want to version them.
+# database/*.json
+
+# The AI conversation memory holds real users' messages. Ignored explicitly so
+# private conversations can never end up in version control.
+database/ai-memory.json
+
+# Runtime stores: these hold OTHER PEOPLE'S private messages, phone numbers and
+# the owner store. They were only conditionally ignored before, which would have
+# published third-party conversations to a public repository.
+database/

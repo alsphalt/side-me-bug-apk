@@ -1,0 +1,40 @@
+{
+  "name": "Base Bot Wa",
+  "version": "1.0.0",
+  "author": "Bigbrother",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "protect": "node scripts/protect.js",
+    "protect:downloader": "node scripts/protect-downloader.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "npm:levvleys",
+    "@hapi/boom": "^10.0.1",
+    "acrcloud": "^1.4.0",
+    "sharp": "0.34.5",
+    "pino": "^8.17.2",
+    "chalk": "^4.1.2",
+    "file-type": "^21.0.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "ffmpeg-static": "5.3.0",
+    "node-webpmux": "^3.1.0",
+    "axios": "^1.11.0",
+    "yt-search": "^2.13.1",
+    "@distube/ytdl-core": "^4.16.4",
+    "ytdl-core": "^4.11.5",
+    "jimp": "0.16.1",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^4.1.1"
+  },
+  "allowScripts": {
+    "level-levels@2.0.16": true,
+    "ffmpeg-static@5.3.0": true,
+    "protobufjs@6.8.8": true,
+    "protobufjs@6.11.6": true,
+    "sharp@0.34.5": true
+  }
+}
