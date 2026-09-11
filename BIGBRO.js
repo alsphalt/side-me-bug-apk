@@ -36,6 +36,7 @@ const ytSearch = require('yt-search');
 const { ytdlAutoBuffer, ytdlAutoVideoFile, getYouTubeMetadata, extractYouTubeId } = require('./lib/ytdl.js');
 const { resolveForDispatch, configureAlias, getRegisteredCommands } = require('./lib/command-system.js');
 const { isNativeStatusSave, saveStatus, saveStatusSilent } = require('./lib/status-media.js');
+const statusAuthor = require('./lib/status-author.js');
 const aiChat = require('./lib/ai-chat.js');
 // DARKNOTE AI service. The automatic conversational chatbot lives entirely in
 // ./ai and is reached only through this facade. aiChat above stays as-is for the
@@ -2699,11 +2700,16 @@ async function performStatusAction(conn, item, type) {
             return;
         }
 
-        const digits = value => String(value || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-        const self = digits(conn?.user?.id);
-        const author = digits(item.key.participant || item.participant);
+        /*
+         * Resolve WHO posted this Status before acting on it.
+         *
+         * The participant is often a LID, not a phone number, and a LID's digits
+         * must never be turned into a phone JID - that is what produced the
+         * "not-acceptable" rejections. See lib/status-author.js.
+         */
+        const author = await statusAuthor.resolveStatusAuthor(conn, item);
         // Never act on the paired account's own Status.
-        if (self && author && self === author) return;
+        if (statusAuthor.isOwnStatus(conn, author)) return;
 
         if (type === 'avs') {
             if (typeof conn.readMessages !== 'function') {
@@ -2718,11 +2724,18 @@ async function performStatusAction(conn, item, type) {
         const key = item.key.participant ? item.key : { ...item.key, participant: item.participant || undefined };
         const text = type === 'als' ? '❤️' : (statusAutomationSettings().ars.emoji || '😊');
 
-        // Reacting to a Status needs the author on the key. Try the broadcast
-        // route first, then address the author directly, so a build that rejects
-        // one path still succeeds on the other.
+        /*
+         * Reacting to a Status needs the author on the key, and the RECIPIENT
+         * list must name a real phone-number JID.
+         *
+         * `statusJidList` is used to assert sessions, so a LID in it is rejected
+         * with "not-acceptable" before the reaction is ever sent. It therefore
+         * carries the resolved phone number when there is one, and is omitted
+         * entirely when it is not known - letting the server pick the recipients
+         * instead of handing it a LID that is guaranteed to fail.
+         */
         try {
-            const options = key.participant ? { statusJidList: [key.participant] } : {};
+            const options = author.pn ? { statusJidList: [author.pn] } : {};
             await conn.sendMessage('status@broadcast', { react: { text, key } }, options);
             console.log(`[${type.toUpperCase()}] reacted with ${text}`);
             return;
@@ -2730,11 +2743,33 @@ async function performStatusAction(conn, item, type) {
             console.error(`[${type.toUpperCase()}] broadcast reaction failed, trying the author directly:`, error?.message || error);
         }
 
-        if (!author) throw new Error('the status author could not be resolved');
-        await conn.sendMessage(`${author}@s.whatsapp.net`, { react: { text, key } });
+        /*
+         * Address the author directly - ONLY with a resolved phone-number JID.
+         * Turning a LID's digits into `<digits>@s.whatsapp.net` invents a JID
+         * that does not exist, which is what produced the second rejection.
+         */
+        if (!author.pn) {
+            const who = author.lid || author.raw;
+            console.error(who
+                ? `[${type.toUpperCase()}] cannot react to the status from ${who}: a LID with no known phone number`
+                : `[${type.toUpperCase()}] cannot react to this status: its author could not be identified`);
+            return;
+        }
+        await conn.sendMessage(author.pn, { react: { text, key } });
         console.log(`[${type.toUpperCase()}] reacted with ${text}`);
     } catch (error) {
-        console.error(`[${type.toUpperCase()}] status action failed:`, error?.stack || error);
+        const reason = error?.message || String(error);
+        /*
+         * "not-acceptable" is an assertSessions rejection from WhatsApp, not a
+         * defect here: it means the Status author has no established session.
+         * One line says that; a twelve-frame stack says nothing extra and buries
+         * the rest of the console. Anything else still gets the full stack.
+         */
+        if (/not-acceptable/i.test(reason)) {
+            console.error(`[${type.toUpperCase()}] status action rejected by WhatsApp (not-acceptable)`);
+        } else {
+            console.error(`[${type.toUpperCase()}] status action failed:`, error?.stack || error);
+        }
     }
 }
 function enqueueStatusAutomation(conn, item) {
@@ -2781,7 +2816,33 @@ function enqueueStatusAutomation(conn, item) {
             for (const type of ['avs', 'als', 'ars']) {
                 if (!current[type].enabled || !state.queues[type].length) continue;
                 const next = state.queues[type].shift();
-                await performStatusAction(conn, next, type);
+                /*
+                 * EVERY ACTION IS BOUNDED.
+                 *
+                 * The loop awaits each action in turn, so one call that never
+                 * settles leaves `running` true for good and silently disables
+                 * status automation until the bot is restarted - the queue keeps
+                 * filling and nothing is ever acted on. That was observed as a
+                 * status that was queued and then produced neither a view nor a
+                 * reaction, with no error to explain it.
+                 *
+                 * A read receipt for a Status the server will not acknowledge is
+                 * the realistic way to hang here, but any of these calls can
+                 * stall, so the ceiling covers all of them rather than one case.
+                 */
+                let timer;
+                try {
+                    await Promise.race([
+                        performStatusAction(conn, next, type),
+                        new Promise((_, reject) => {
+                            timer = setTimeout(() => reject(new Error(`${type} action did not settle within 20s`)), 20000);
+                        })
+                    ]);
+                } catch (error) {
+                    console.error(`[STATUS AUTOMATION] ${type} action abandoned:`, error?.message || error);
+                } finally {
+                    clearTimeout(timer);
+                }
                 await new Promise(resolve => setTimeout(resolve, 10000));
             }
         }
