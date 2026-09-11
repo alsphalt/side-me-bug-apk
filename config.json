@@ -164,6 +164,7 @@
     }
   },
   "telegram": {
-    "maxSessions": 3
+    "mode": "bot",
+    "ownerId": ""
   }
 }

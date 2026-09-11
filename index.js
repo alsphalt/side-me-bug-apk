@@ -39,8 +39,145 @@ try {
     console.error('[TELEGRAM] controller could not be loaded:', error?.message || error)
 }
 
+const sessionStore = require('./lib/session.js')
+
 runtimeMonitor.installGuards()
 runtimeMonitor.startMonitor()
+
+/*
+ * WHO OWNS PAIRING.
+ *
+ * 'console'  - the original blocking prompt on stdin (default, unchanged).
+ * 'telegram' - the Telegram controller drives it; the console prompt is skipped
+ *              so startup is never blocked waiting on input nobody can see.
+ *
+ * Set from startTelegram() when the controller reports it is online.
+ */
+let pairingOwner = 'console'
+
+/**
+ * Ask WhatsApp for a pairing code on an OPEN socket.
+ *
+ * Split out because both the console flow and the Telegram /pair flow need the
+ * identical request - one implementation, so the two can never drift apart.
+ */
+async function requestCode(conn, phone) {
+    if (!conn || typeof conn.requestPairingCode !== 'function') {
+        throw new Error('this socket cannot request a pairing code')
+    }
+    const requested = String(config.pairingCode || 'DARKNOTE').replace(/\s+/g, '').slice(0, 8).toUpperCase() || 'DARKNOTE'
+    // The handshake needs the socket to be fully open before it will accept the
+    // request; asking too early is the usual cause of a silent failure.
+    const deadline = Date.now() + 15000
+    while (Date.now() < deadline) {
+        if (conn.ws?.readyState === 1 || conn.__darknoteConnectionState === 'open') break
+        await new Promise(resolve => setTimeout(resolve, 300))
+    }
+    await new Promise(resolve => setTimeout(resolve, 3000))
+    return conn.requestPairingCode(phone, requested)
+}
+
+/** Wait until a live socket exists, so pairing never races startup. */
+async function waitForSocket(timeoutMs = 25000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+        const conn = runtimeMonitor.currentSocket()
+        if (conn) return conn
+        await new Promise(resolve => setTimeout(resolve, 300))
+    }
+    return null
+}
+
+/**
+ * Pair a number, reusing the bot's ONE socket.
+ *
+ * No second socket is ever created here. When an existing pairing has to be
+ * replaced the current socket is closed and the session folder is deleted, then
+ * the normal startup path builds a fresh unregistered socket - which, because
+ * `pairingOwner` is 'telegram', skips the console prompt and waits to be asked
+ * for a code. The code is then requested on that same socket.
+ *
+ * Returns { ok, code } or { ok: false, reason } - never throws, so the Telegram
+ * controller can always report something honest.
+ */
+async function pairSession(phone) {
+    const digits = String(phone || '').replace(/\D/g, '')
+    if (!/^\d{8,15}$/.test(digits)) return { ok: false, reason: 'invalid-number' }
+
+    const replacing = sessionStore.isRegistered()
+    try {
+        if (replacing) {
+            console.log('[SESSION] replacing the existing pairing as requested from Telegram')
+            const current = runtimeMonitor.currentSocket()
+            if (current) {
+                runtimeMonitor.unregister(current)
+                try {
+                    if (typeof current.end === 'function') current.end(new Error('pairing replaced'))
+                    else if (typeof current.ws?.close === 'function') current.ws.close()
+                } catch (error) {
+                    console.error('[SESSION] could not close the old socket:', error?.message || error)
+                }
+            }
+            runtimeMonitor.cancelReconnect()
+            const cleared = sessionStore.reset()
+            if (!cleared.ok) return { ok: false, reason: 'reset-failed' }
+
+            // Let the startup path rebuild an unregistered socket.
+            connectInFlight = false
+            connectToWhatsApp().catch(error =>
+                console.error('❌ Connect after re-pair failed:', error?.message || error))
+        }
+
+        const conn = await waitForSocket()
+        if (!conn) return { ok: false, reason: 'no-socket' }
+
+        const code = await requestCode(conn, digits)
+        console.log(`[SESSION] pairing code issued for +${digits}`)
+        return { ok: true, code: String(code || ''), replaced: replacing }
+    } catch (error) {
+        console.error('[SESSION] pairing failed:', error?.stack || error)
+        return { ok: false, reason: 'request-failed', detail: error?.message || String(error) }
+    }
+}
+
+/*
+ * What the Telegram controller is allowed to do with the session. Passed in
+ * explicitly rather than having telegram.js require this file, which would be a
+ * circular import and would let a second copy of the socket logic exist.
+ */
+const botApi = {
+    sessionInfo: () => sessionStore.info(),
+    isRegistered: () => sessionStore.isRegistered(),
+    describe: () => sessionStore.describe(),
+    pair: phone => pairSession(phone),
+    // Deletes the stored credentials only. The live socket keeps the session in
+    // memory until the next start, which is exactly what telegram.js tells the
+    // user rather than implying an immediate disconnect.
+    removeSession: () => sessionStore.reset(),
+    connectionState: () => runtimeMonitor.telegramState(),
+    setPairingOwner: owner => { pairingOwner = owner === 'telegram' ? 'telegram' : 'console' },
+    pairingOwner: () => pairingOwner
+}
+
+/** Start the Telegram controller, letting it own pairing when it comes online. */
+async function startTelegram() {
+    if (!telegram) return
+    try {
+        const result = await telegram.start({ bot: botApi })
+        // Only hand pairing to Telegram once it has proved it is actually online.
+        // Otherwise a broken token would leave the bot with no way to pair at all.
+        if (result?.ok) {
+            const changed = botApi.pairingOwner() !== 'telegram'
+            botApi.setPairingOwner('telegram')
+            // Logged once, not on every reconnect.
+            if (changed) console.log('[SESSION] pairing is now handled from Telegram (/pair)')
+        } else {
+            console.log(`[SESSION] Telegram unavailable (${result?.reason || 'unknown'}); console pairing stays active`)
+        }
+    } catch (error) {
+        console.error('[TELEGRAM] start failed:', error?.message || error)
+    }
+}
 
 /*
  * Guards against two concurrent connect attempts. The runtime also closes a
@@ -249,57 +386,65 @@ async function startSocket() {
             }
 
             /*
-             * TELEGRAM CONTROL PANEL. `start()` is idempotent and returns
-             * "already-running" on every later call, so a WhatsApp reconnect can
-             * never spawn a second Telegram poller. A missing or rejected token
-             * disables it with a log line and never blocks the WhatsApp bot.
+             * The controller is already running (started before the first
+             * connect, so it could own pairing). Calling start() again is
+             * idempotent and returns "already-running", which keeps a reconnect
+             * from ever spawning a second Telegram poller - it is only here to
+             * recover a controller that failed at boot.
              */
-            if (telegram) {
-                telegram.start().catch(error => {
-                    console.error('[TELEGRAM] start failed:', error?.message || error)
-                })
-            }
+            startTelegram()
         }
     })
 
+    /*
+     * PAIRING.
+     *
+     * Exactly one of two paths runs:
+     *
+     *   - Telegram is driving pairing (`pairingOwner === 'telegram'`). The console
+     *     prompt is SKIPPED, because a blocking readline prompt would hold up
+     *     startup and nobody would see it in a panel. This socket is left open and
+     *     unregistered, and Telegram asks for a code on it when /pair arrives.
+     *
+     *   - Nothing else is driving it, so the original console flow runs unchanged.
+     *
+     * Only one socket ever exists for `auth/`, so Telegram pairing and the console
+     * flow can never fight over the same session.
+     */
     if (!state.creds.registered) {
-        console.log('\n🔗 DARKNOTE L2 WhatsApp Linking')
-        console.log('Enter the WhatsApp number that you want to link to this bot.')
-        console.log('Use international format without + or spaces. Example: 2547XXXXXXXX')
+        if (pairingOwner === 'telegram') {
+            console.log('[SESSION] not paired — waiting for a Telegram /pair request')
+        } else {
+            console.log('\n🔗 DARKNOTE L2 WhatsApp Linking')
+            console.log('Enter the WhatsApp number that you want to link to this bot.')
+            console.log('Use international format without + or spaces. Example: 2547XXXXXXXX')
 
-        let phoneNumber = ''
-        while (!phoneNumber) {
-            const enteredNumber = await question('📱 WhatsApp number: ')
-            phoneNumber = String(enteredNumber || '').replace(/\D/g, '')
+            let phoneNumber = ''
+            while (!phoneNumber) {
+                const enteredNumber = await question('📱 WhatsApp number: ')
+                phoneNumber = String(enteredNumber || '').replace(/\D/g, '')
 
-            if (!/^\d{8,15}$/.test(phoneNumber)) {
-                console.log('❌ Invalid number. Enter 8–15 digits in international format.')
-                phoneNumber = ''
+                if (!/^\d{8,15}$/.test(phoneNumber)) {
+                    console.log('❌ Invalid number. Enter 8–15 digits in international format.')
+                    phoneNumber = ''
+                }
             }
-        }
 
-        try {
-            // The installed Baileys fork (levvleys) accepts a custom pairing code
-            // as the second argument of requestPairingCode() and this companion
-            // asserts it during the link_code_companion_reg handshake, so the
-            // code shown here is the one the phone must be given. The phone's
-            // entry field takes 8 characters, hence the fixed length.
-            // Override with config.json -> "pairingCode"; defaults to DARKNOTE.
-            const requested = String(config.pairingCode || 'DARKNOTE').replace(/\s+/g, '').slice(0, 8).toUpperCase() || 'DARKNOTE'
-            await new Promise(resolve => setTimeout(resolve, 3000))
-            const code = await conn.requestPairingCode(phoneNumber, requested)
-            console.log('\n════════════════════════════════════')
-            console.log(`🔐 DARKNOTE PAIRING CODE: ${code}`)
-            console.log('Open WhatsApp → Linked Devices → Link a device → Link with phone number.')
-            console.log('Enter the code shown above on the phone you want to link.')
-            console.log('════════════════════════════════════\n')
-        } catch (error) {
-            console.error('❌ Failed to request the WhatsApp pairing code:', error)
-            // The session is unusable and retrying would loop forever against a
-            // server that keeps refusing, so this is the fatal path: report the
-            // real cause and let the panel supervisor restart the process.
-            runtimeMonitor.fatal('WhatsApp pairing code could not be requested', error)
-            throw error
+            try {
+                const code = await requestCode(conn, phoneNumber)
+                console.log('\n════════════════════════════════════')
+                console.log(`🔐 DARKNOTE PAIRING CODE: ${code}`)
+                console.log('Open WhatsApp → Linked Devices → Link a device → Link with phone number.')
+                console.log('Enter the code shown above on the phone you want to link.')
+                console.log('════════════════════════════════════\n')
+            } catch (error) {
+                console.error('❌ Failed to request the WhatsApp pairing code:', error)
+                // The session is unusable and retrying would loop forever against a
+                // server that keeps refusing, so this is the fatal path: report the
+                // real cause and let the panel supervisor restart the process.
+                runtimeMonitor.fatal('WhatsApp pairing code could not be requested', error)
+                throw error
+            }
         }
     }
 
@@ -416,4 +561,20 @@ async function startSocket() {
     conn.ev.on('creds.update', saveCreds)
 }
 
-connectToWhatsApp()
+/*
+ * BOOT ORDER MATTERS.
+ *
+ * The Telegram controller is started FIRST, so that when the socket reaches its
+ * pairing branch it already knows whether Telegram owns pairing. Starting it
+ * afterwards would mean an unpaired bot dropped into the blocking console
+ * prompt and Telegram /pair could never be reached.
+ *
+ * If Telegram cannot start (no token, rejected token), pairingOwner stays
+ * 'console' and the original pairing flow runs exactly as before.
+ */
+;(async () => {
+    await startTelegram()
+    connectToWhatsApp().catch(error => {
+        console.error('❌ Initial connect failed:', error?.message || error)
+    })
+})()
