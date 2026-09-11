@@ -111,6 +111,10 @@ async function pairSession(phone) {
             const current = runtimeMonitor.currentSocket()
             if (current) {
                 runtimeMonitor.unregister(current)
+                // Flagged BEFORE end(), because the close event can fire before
+                // the next line runs.
+                current.__darknoteRetired = true
+                current.__darknoteConnectionState = 'closed'
                 try {
                     if (typeof current.end === 'function') current.end(new Error('pairing replaced'))
                     else if (typeof current.ws?.close === 'function') current.ws.close()
@@ -342,6 +346,22 @@ async function startSocket() {
             connectionState = 'closed'
             conn.__darknoteConnectionState = 'closed'
             stopPresenceUpdates()
+
+            /*
+             * RETIRED SOCKET — do not reconnect.
+             *
+             * When a pairing is replaced the old socket is closed ON PURPOSE, and
+             * its close event fires asynchronously - AFTER the replacement has
+             * already asked for a cancel. Without this flag that late close
+             * scheduled a fresh reconnect for a session that had just been
+             * cleared, producing a second unregistered socket racing the new
+             * pairing. That is exactly the duplicate-connection situation the
+             * single-socket rule exists to prevent.
+             */
+            if (conn.__darknoteRetired) {
+                console.log('Old socket retired for re-pairing; no reconnect scheduled.')
+                return
+            }
             // Only THIS socket may clear the shared flag. A stale socket closing
             // after a newer one opened must not tell helpers the bot is offline.
             if (runtimeMonitor.currentSocket() === conn) runtimeMonitor.unregister(conn)

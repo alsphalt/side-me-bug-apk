@@ -2611,6 +2611,19 @@ async function performStatusAction(conn, item, type) {
     try {
         if (!item?.key || item.key.remoteJid !== 'status@broadcast') return;
 
+        /*
+         * A closed or retired socket has nothing to act on.
+         *
+         * Replacing a pairing closes the old socket while queued status work is
+         * still in flight, and without this guard each queued item threw
+         * "Connection Closed" and was logged as a failure - noise that looked
+         * like a bug but was really work aimed at a socket that no longer
+         * existed.
+         */
+        if (conn?.__darknoteRetired || (conn?.__darknoteConnectionState && conn.__darknoteConnectionState !== 'open')) {
+            return;
+        }
+
         const digits = value => String(value || '').split('@')[0].split(':')[0].replace(/\D/g, '');
         const self = digits(conn?.user?.id);
         const author = digits(item.key.participant || item.participant);
@@ -2678,6 +2691,17 @@ function enqueueStatusAutomation(conn, item) {
     state.running = true;
     const run = async () => {
         while (state.queues.avs.length || state.queues.als.length || state.queues.ars.length) {
+            /*
+             * Stop the whole loop when the socket is gone, instead of working
+             * through the remaining items one at a time. Each item would throw,
+             * and the loop waits 10 seconds between items, so a retired socket
+             * could spin for minutes producing errors and doing nothing.
+             */
+            if (conn?.__darknoteRetired || (conn?.__darknoteConnectionState && conn.__darknoteConnectionState !== 'open')) {
+                state.queues = { avs: [], als: [], ars: [] };
+                console.log('[STATUS AUTOMATION] stopped: the socket is no longer open.')
+                break;
+            }
             const current = statusAutomationSettings();
             for (const type of ['avs', 'als', 'ars']) {
                 if (!current[type].enabled || !state.queues[type].length) continue;

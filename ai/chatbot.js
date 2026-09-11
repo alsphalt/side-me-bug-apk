@@ -401,6 +401,19 @@ function releaseBatch(batch) {
 async function send(conn, batch, text, options = {}) {
     const value = String(text || '').trim()
     if (!value) return false
+
+    /*
+     * A closed or retired socket cannot send.
+     *
+     * Replacing a pairing closes the old socket while a reply is still being
+     * generated, and sending anyway threw "Connection Closed" out of the send
+     * path - logged as a chatbot failure when the real cause was simply that the
+     * socket had been deliberately retired. Dropped, with the reason, instead.
+     */
+    if (conn?.__darknoteRetired || (conn?.__darknoteConnectionState && conn.__darknoteConnectionState !== 'open')) {
+        console.log(`[AI] dropped a queued reply for ${batch?.chat || 'unknown chat'}: the socket is no longer open`)
+        return false
+    }
     const settings = config.getAiSettings()
     const capped = value.length > settings.maxReplyChars
         ? `${value.slice(0, settings.maxReplyChars).trimEnd()}…`

@@ -16,7 +16,7 @@
     "timeoutMs": 20000
   },
   "protectedBlockJids": [],
-  "mode": "public",
+  "mode": "self",
   "prefix": ".",
   "ownerName": "Bigbrother",
   "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
@@ -92,15 +92,15 @@
     "maxSessions": 800,
     "sessionTtlDays": 30,
     "modules": {
-      "assistant": false,
+      "assistant": true,
       "moderation": false,
       "rewrite": false,
       "translate": false,
       "files": false,
       "web": false,
-      "vision": false,
+      "vision": true,
       "image": false,
-      "sticker": false,
+      "sticker": true,
       "imagesearch": false
     },
     "autohumanEnabled": false,
