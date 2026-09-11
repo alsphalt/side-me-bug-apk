@@ -230,17 +230,32 @@ function capabilityText() {
     mark('image generation', caps.imageGeneration)
     mark('image editing', caps.imageEditing)
     mark('tool / function calling', caps.toolCalling)
+    /*
+     * A provider that has never been probed must not be described as if it had
+     * been. ChatGPT is registered with `verifiedOn: ''` precisely because no
+     * request has been made against it from here, so it is labelled as
+     * unmeasured rather than being given a reliability figure it has not earned.
+     */
+    const rowText = row => {
+        const reliability = row.measured?.reliability || '?'
+        const suffix = row.measured?.verifiedOn ? `${reliability} ok` : `${reliability} — not measured`
+        return `• ${row.label}: cap ${row.limit} · ${suffix}`
+    }
+
+    // Taken from the registry, so adding a provider cannot leave this stale.
+    const bestAvailable = rows.reduce((max, row) => Math.max(max, Number(row.limit) || 0), 0)
+
     return [
-        '*🔎 MEASURED PROVIDER CAPABILITIES*',
+        '*🔎 PROVIDER CAPABILITIES*',
         '',
         `✅ ${yes.join(', ') || '—'}`,
         `⚠️ ${partial.join(', ') || '—'}`,
         `❌ ${no.join(', ') || '—'}`,
         '',
         '*Per provider*',
-        ...rows.map(r => `• ${r.label}: cap ${r.limit} · ${r.measured?.reliability || '?'} ok`),
+        ...rows.map(rowText),
         '',
-        `Gateway prompt cap: ${caps.gatewayMaxPromptChars} · best available: ${caps.maxPromptChars}`
+        `Gateway prompt cap: ${caps.gatewayMaxPromptChars} · best available: ${bestAvailable}`
     ].join('\n')
 }
 

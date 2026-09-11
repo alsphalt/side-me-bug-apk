@@ -280,8 +280,16 @@ async function run(conn, m, settings, key) {
         typingOn = false
         await conn.sendMessage(chat, { text: answer }, { quoted: m })
 
-        // Record both sides so the next turn has the full back-and-forth.
-        memory.appendTranscript(key, { who: 'them', text: m.text }, settings)
+        /*
+         * Record OUR side only.
+         *
+         * The incoming message was already appended by handle(), BEFORE the
+         * prompt was built - that is what puts the message being answered into
+         * the context window. Appending it again here stored every incoming
+         * message twice, so the 15-message window covered half as much real
+         * conversation as it claimed and the prompt budget was spent on
+         * duplicates.
+         */
         memory.appendTranscript(key, { who: 'me', text: answer }, settings)
 
         console.log(`[AUTOHUMAN] replied to ${key} in ${Date.now() - started}ms via ${result.provider} (${built.included} msg context)`)

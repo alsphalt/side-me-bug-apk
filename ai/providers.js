@@ -141,11 +141,153 @@ function classifyChat(status, json, raw) {
     }
 }
 
+/* -------------------------- OpenAI (ChatGPT) ----------------------------- */
+
+/**
+ * ChatGPT envelope:
+ *   { choices: [ { message: { role: 'assistant', content: "..." } } ] }
+ *
+ * A non-empty string is REQUIRED. A refusal arrives as a normal 200 with the
+ * refusal in content, and a content-filtered or tool-call-only response arrives
+ * as a 200 with `content: null`. Returning null in those cases makes the router
+ * treat the attempt as failed and fall back, which is correct - the alternative
+ * is sending the user an empty WhatsApp message.
+ */
+function extractOpenAI(json) {
+    if (!json) return null
+    const choice = Array.isArray(json.choices) ? json.choices[0] : null
+    const content = choice?.message?.content
+    if (typeof content === 'string' && content.trim()) return content.trim()
+    // Some deployments return an array of content parts instead of a plain string.
+    if (Array.isArray(content)) {
+        const joined = content
+            .map(part => (typeof part?.text === 'string' ? part.text : ''))
+            .join('')
+            .trim()
+        if (joined) return joined
+    }
+    return null
+}
+
+/**
+ * ChatGPT error envelope:
+ *   { error: { message: "...", type: "...", code: "..." } }
+ *
+ * `insufficient_quota` is deliberately NOT classified as a rate limit. It means
+ * the account is out of credit, so retrying changes nothing; it is reported as an
+ * auth failure so the router stops asking instead of burning the attempt budget
+ * on a dead credential.
+ */
+function classifyOpenAI(status, json, raw) {
+    const error = json?.error && typeof json.error === 'object' ? json.error : {}
+    const code = String(error.code || error.type || '')
+    const message = String(
+        error.message
+        || (typeof json?.error === 'string' ? json.error : '')
+        || raw
+        || ''
+    )
+    const outOfCredit = code === 'insufficient_quota' || /exceeded your current quota|check your plan and billing/i.test(message)
+    return {
+        authError: status === 401 || status === 403 || code === 'invalid_api_key' || outOfCredit,
+        promptTooLong: code === 'context_length_exceeded' || /maximum context length|too many tokens/i.test(message),
+        missingParameter: code === 'missing_required_parameter' || (status === 400 && /missing/i.test(message)),
+        rateLimited: !outOfCredit && (status === 429 || code === 'rate_limit_exceeded' || /rate limit/i.test(message)),
+        serverError: status >= 500 || code === 'server_error',
+        code: code || (status ? `HTTP_${status}` : 'NETWORK'),
+        reason: message.slice(0, 200) || (status ? `HTTP ${status}` : 'network error')
+    }
+}
+
 /* ======================================================================== */
 /*                              THE REGISTRY                                 */
 /* ======================================================================== */
 
 const PROVIDERS = [
+    {
+        /*
+         * CHATGPT (OpenAI) — the owner's own OpenAI account.
+         *
+         * This is the ONLY provider in this file that is not the mzazi gateway,
+         * and it differs in three ways that are handled explicitly:
+         *
+         *   1. ITS OWN BASE URL. Every other provider appends its path to the
+         *      shared `settings.baseUrl`. That value is the mzazi gateway, so
+         *      reusing it here would post an OpenAI path to mzazi. `baseUrl` on
+         *      the provider object wins, and the shared value is left alone, so
+         *      the rest of the pool keeps working as a fallback.
+         *
+         *   2. ITS OWN KEY (apiKeyEnv). The pool shares one mzazi credential;
+         *      this one uses OPENAI_API_KEY. The router therefore must NOT abort
+         *      the whole fallback chain when THIS provider's key is rejected, so
+         *      it aborts only for providers with no apiKeyEnv of their own.
+         *
+         *   3. A KEY IN A HEADER, NOT A URL. Every ?prompt= provider puts the key
+         *      in the query string, which is why they all set
+         *      `urlIsSecretFree: false`. Here the key travels in the
+         *      Authorization header, so the URL is safe.
+         *
+         * NOT MEASURED. No request has ever been made against this endpoint from
+         * this repo, because it needs a credential the code does not have. The
+         * limits below are conservative budgeting figures, NOT probe results, and
+         * they are recorded as such rather than being given a fake verification
+         * date. Nothing in this file should claim otherwise until the owner's key
+         * is in place and a probe has actually run.
+         */
+        id: 'openai',
+        label: 'ChatGPT (OpenAI)',
+        // Its own gateway. Do not fall back to settings.baseUrl (see note 1).
+        baseUrl: 'https://api.openai.com/v1',
+        endpointPath: '/chat/completions',
+        method: 'POST',
+        authStyle: 'bearer',
+        parameter: 'prompt',
+        envelope: 'openai',
+        apiKeyEnv: 'OPENAI_API_KEY',
+        /*
+         * This provider must NEVER borrow the shared pool key. Sending a mzazi
+         * credential to api.openai.com is a guaranteed 401, which would look
+         * like an OpenAI outage and would log a misleading auth error. Without a
+         * key of its own it is simply not a candidate.
+         */
+        requireOwnKey: true,
+        // Used when config.json -> ai.model is empty.
+        model: 'gpt-4o-mini',
+        // This endpoint has no 302-character gateway, unlike the ?prompt= family.
+        measured: {
+            promptLimit: null,
+            reliability: 'unverified',
+            latencyMs: 'unknown',
+            verifiedOn: '',
+            notes: 'NOT MEASURED - needs the owner\'s OPENAI_API_KEY. maxPromptChars is a conservative budget (~3k tokens), not a measured gateway cap.'
+        },
+        capabilities: textOnlyCapabilities({ maxPromptChars: 12000 }),
+        /*
+         * Highest priority in every objective while the owner has deliberately
+         * selected this provider. The ranking is a heuristic, not a benchmark -
+         * what is deliberate here is that choosing "openai" in config.json
+         * actually means ChatGPT is used, rather than being one voice in a pool.
+         */
+        priority: { casual: 100, general: 100, reasoning: 100, coding: 100, translation: 95, longcontext: 100, default: 100 },
+        buildRequest(prompt, settings) {
+            return {
+                url: `${this.baseUrl}${this.endpointPath}`,
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    authorization: `Bearer ${settings.apiKey}`
+                },
+                body: {
+                    model: String(settings.model || '').trim() || this.model,
+                    messages: [{ role: 'user', content: prompt }]
+                }
+            }
+        },
+        extract: extractOpenAI,
+        classify: classifyOpenAI,
+        // The key is in the Authorization header, so logging this URL leaks nothing.
+        urlIsSecretFree: true
+    },
     {
         id: 'chat',
         label: 'Chat',
@@ -330,6 +472,8 @@ module.exports = {
     textOnlyCapabilities,
     extractStandard,
     extractChat,
+    extractOpenAI,
     classifyStandard,
-    classifyChat
+    classifyChat,
+    classifyOpenAI
 }

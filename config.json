@@ -48,7 +48,8 @@
     "abuseSafetyEnabled": true,
     "onlineCycleEnabled": false,
     "onlineCycleMs": 0,
-    "provider": "router",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
     "baseUrl": "https://www.mzazi.shop",
     "endpoint": "https://www.mzazi.shop/api/ai/gpt-5",
     "chatbotEnabled": true,
@@ -103,7 +104,7 @@
       "sticker": true,
       "imagesearch": false
     },
-    "autohumanEnabled": false,
+    "autohumanEnabled": true,
     "autohumanAnalyseMs": 3000,
     "autohumanGenerateMs": 4000,
     "autohumanPreSendMs": 2000

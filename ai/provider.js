@@ -86,7 +86,14 @@ function askDifferent(prompt, settings, avoidProvider, options = {}) {
 
 /** Single attempt against one named provider. Kept for diagnostics and tests. */
 async function askOnce(prompt, settings, providerId) {
-    const provider = providers.getProvider(providerId) || providers.PROVIDERS[0]
+    /*
+     * The default must be a provider that uses the SHARED pool key. Falling back
+     * to PROVIDERS[0] used to mean "chat"; it now means OpenAI, which requires
+     * its own credential and would fail for anyone without one.
+     */
+    const provider = providers.getProvider(providerId)
+        || providers.listProviders().find(candidate => !candidate.requireOwnKey)
+        || providers.PROVIDERS[0]
     const outcome = await router.ask(prompt, { ...settings, disabledProviders: providers.providerIds().filter(id => id !== provider.id) })
     return { ok: outcome.ok, answer: outcome.answer, provider: provider.id, code: outcome.code, reason: outcome.reason, attempts: outcome.attempts }
 }

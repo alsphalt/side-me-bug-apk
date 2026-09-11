@@ -57,6 +57,16 @@ function rank(settings, { objective, promptLength, exclude = [], force = '' }) {
         if (disabled) { rejected.push({ id, why: 'disabled' }); continue }
         if (exclude.includes(id)) { rejected.push({ id, why: 'excluded' }); continue }
 
+        /*
+         * A provider that must bring its own credential cannot serve without it.
+         * Excluding it here means a missing key reads as "not configured" rather
+         * than as a full round-trip 401 that gets logged as an outage.
+         */
+        if (provider.requireOwnKey && !String(process.env[provider.apiKeyEnv] || '').trim()) {
+            rejected.push({ id, why: `no-credential:${provider.apiKeyEnv}` })
+            continue
+        }
+
         const limit = Number(provider.capabilities?.maxPromptChars) || 302
         if (promptLength > limit) { rejected.push({ id, why: `prompt ${promptLength} > limit ${limit}` }); continue }
 
@@ -110,6 +120,14 @@ function resolveKey(provider, settings) {
     if (envName) {
         const value = String(process.env[envName] || '').trim()
         if (value) return value
+        /*
+         * No key of its own. A provider flagged `requireOwnKey` must not fall
+         * back to the shared credential - that would send the wrong company's
+         * key to a different API and report the resulting 401 as an outage.
+         * Returning '' leaves the Authorization header empty, and rank() has
+         * already excluded such a provider anyway.
+         */
+        if (provider.requireOwnKey) return ''
     }
     return settings.apiKey
 }
@@ -157,11 +175,29 @@ async function ask(prompt, settings, options = {}) {
     const objective = options.objective
         || objectives.detect(options.originalMessage || text, { promptLength: text.length, requested: options.forceProvider }).objective
 
+    /*
+     * WHICH PROVIDER IS PREFERRED.
+     *
+     * `options.forceProvider` wins when a caller names one explicitly. Failing
+     * that, `settings.provider` is honoured: it is the value the owner sets in
+     * config.json, and it was previously read NOWHERE in the codebase, so
+     * choosing a provider there had no effect at all. 'router' - and an empty or
+     * unrecognised value - keeps the original behaviour of ranking the whole pool.
+     *
+     * Forcing only adds a large ranking bonus (see rank()). A forced provider
+     * that is unhealthy, or whose prompt window cannot fit the request, is still
+     * skipped in favour of the rest of the pool, so this cannot turn a working
+     * setup into a hard failure.
+     */
+    const configured = String(settings.provider || '').trim().toLowerCase()
+    const forced = options.forceProvider
+        || (configured && configured !== 'router' && providers.getProvider(configured) ? configured : '')
+
     const { candidates, rejected } = rank(settings, {
         objective,
         promptLength: text.length,
         exclude: options.excludeProviders || [],
-        force: options.forceProvider || ''
+        force: forced
     })
 
     if (!candidates.length) {
@@ -198,9 +234,19 @@ async function ask(prompt, settings, options = {}) {
             }
         }
 
-        // A shared credential is wrong, so every provider will fail the same
-        // way. Stop and report once, rather than burning the fallback chain.
-        if (result.code === 'INVALID_API_KEY') {
+        /*
+         * A SHARED credential being wrong stops the chain: every provider behind
+         * the same key would fail identically, so retrying only burns the user's
+         * time and produces a second, identical error.
+         *
+         * A provider that declares its OWN key (`apiKeyEnv`) is a different case.
+         * Its credential is not the pool's, so a rejection says nothing about the
+         * others and the chain must continue. Without this distinction a bad
+         * OpenAI key would kill the mzazi fallbacks too - and vice versa - even
+         * though the two credentials are unrelated.
+         */
+        const usesSharedKey = !provider.apiKeyEnv
+        if (result.code === 'INVALID_API_KEY' && usesSharedKey) {
             return { ok: false, code: 'INVALID_API_KEY', objective, attempts: tried.length, reason: result.reason, tried }
         }
 

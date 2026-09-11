@@ -194,6 +194,9 @@ function getAiSettings() {
 
         /* --- provider / router ---------------------------------------------- */
         provider: pickStr('AI_PROVIDER', ai.provider, 'router'),
+        // Model name for providers that take one (ChatGPT). Empty means "use the
+        // provider's own default", see the `openai` entry in ai/providers.js.
+        model: pickStr('AI_MODEL', ai.model, ''),
         baseUrl: pickStr('AI_BASE_URL', ai.baseUrl, DEFAULT_BASE_URL).replace(/\/+$/, ''),
         endpoint: pickStr('AI_ENDPOINT', ai.endpoint, `${DEFAULT_BASE_URL}/api/ai/gpt-5`),
         apiKey,
@@ -308,10 +311,38 @@ function getAiSettings() {
     }
 }
 
-/** True when the chatbot has everything it needs to attempt a reply. */
+/**
+ * The credential a named provider will really send, or '' when it has none.
+ *
+ * A provider that brings its OWN key (apiKeyEnv) does not use the shared pool
+ * credential, so "is the pool key set?" is the wrong question to ask about it.
+ */
+function providerKeyFor(providerId) {
+    try {
+        // Required lazily: providers.js has no requires of its own, so this
+        // cannot form a cycle with the registry.
+        const providers = require('./providers')
+        const provider = providers.getProvider(String(providerId || '').trim().toLowerCase())
+        if (!provider?.apiKeyEnv) return ''
+        return String(process.env[provider.apiKeyEnv] || '').trim()
+    } catch {
+        return ''
+    }
+}
+
+/**
+ * True when the chatbot has everything it needs to attempt a reply.
+ *
+ * A provider with its own credential counts even when the shared pool key is
+ * unset, because that is the key it will actually send. Testing only the shared
+ * key reported a ChatGPT-only setup as "not configured" when it was in fact
+ * perfectly configured.
+ */
 function isUsable() {
     const s = getAiSettings()
-    return Boolean(s.chatbotEnabled && s.apiKey && s.baseUrl)
+    if (!s.chatbotEnabled) return false
+    const poolReady = Boolean(s.apiKey && s.baseUrl)
+    return Boolean(poolReady || providerKeyFor(s.provider))
 }
 
 /** Safe, non-secret description used by the status command and logs. */

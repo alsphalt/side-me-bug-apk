@@ -1431,6 +1431,81 @@ contentText: menu.build(config, {
             break;
         }
 
+        /*
+         * REMOVE EVERY MEMBER AT ONCE.
+         *
+         * Destructive and not undoable, so this is a two-step command: a bare
+         * `.kickall` reports exactly what it WOULD do and how many members are
+         * affected, and only `.kickall confirm` performs the removals.
+         *
+         * Admins are never touched - WhatsApp refuses to remove an admin, and
+         * quietly skipping them is more useful than reporting a failure nobody
+         * can act on. The bot never removes itself.
+         *
+         * Removals go out in small batches with a short gap between them. A
+         * single groupParticipantsUpdate carrying the whole member list is
+         * silently dropped by WhatsApp, which is the failure mode that makes a
+         * mass-removal command look like it worked when nothing happened. The
+         * counts reported below are what the API accepted per batch, so a
+         * partial removal is reported as partial rather than as success.
+         */
+        case 'kickall': {
+            if (!m.isGroup) return bigboreply('❌ This command can only be used in groups.');
+            try {
+                const metadata = await conn.groupMetadata(m.chat);
+                if (!isGroupAdmin(metadata, m.sender)) return bigboreply('❌ Only group admins can use .kickall.');
+                if (!isGroupAdmin(metadata, conn.user?.id || '')) return bigboreply('❌ DARKNOTE must be a group admin to remove members.');
+
+                const botIds = [conn.user?.id, conn.user?.lid].filter(Boolean).map(id => normalizeJidForCompare(id));
+                const botNumber = getNumber(conn.user?.id || '');
+
+                const targets = [];
+                for (const participant of metadata.participants || []) {
+                    const jid = participant?.id || participant?.jid || participant?.lid;
+                    if (!jid) continue;
+                    if (botIds.includes(normalizeJidForCompare(jid))) continue;   // never the bot
+                    if (botNumber && getNumber(jid) === botNumber) continue;      // ...however it is addressed
+                    if (isGroupAdmin(metadata, jid)) continue;                    // never an admin
+                    targets.push(jid);
+                }
+
+                if (!targets.length) return bigboreply('ℹ️ Nobody to remove — every other participant is an admin.');
+
+                if (String(args[0] || '').toLowerCase() !== 'confirm') {
+                    return bigboreply([
+                        '⚠️ *REMOVE ALL MEMBERS*',
+                        '',
+                        `This removes *${targets.length}* member${targets.length === 1 ? '' : 's'} from this group.`,
+                        'Admins are kept. This cannot be undone.',
+                        '',
+                        `Send *${config.prefix || '.'}kickall confirm* to go ahead.`
+                    ].join('\n'));
+                }
+
+                const BATCH = 5;
+                let removed = 0;
+                let failed = 0;
+                for (let index = 0; index < targets.length; index += BATCH) {
+                    const batch = targets.slice(index, index + BATCH);
+                    try {
+                        await conn.groupParticipantsUpdate(m.chat, batch, 'remove');
+                        removed += batch.length;
+                    } catch (error) {
+                        console.error('[KICKALL] batch failed:', error?.stack || error);
+                        failed += batch.length;
+                    }
+                    if (index + BATCH < targets.length) await new Promise(resolve => setTimeout(resolve, 1200));
+                }
+
+                if (failed) return bigboreply(`⚠️ Removed ${removed} of ${targets.length} members. ${failed} could not be removed.`);
+                return bigboreply(`✅ Removed all ${removed} member${removed === 1 ? '' : 's'}. Admins were kept.`);
+            } catch (error) {
+                console.error('[KICKALL] Error:', error?.stack || error);
+                return bigboreply('❌ Failed to remove the members.');
+            }
+            break;
+        }
+
         case 'add': {
             try {
                 const { dispatchGroup } = require('./lib/protected-group.js');
