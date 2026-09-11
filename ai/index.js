@@ -28,6 +28,8 @@ const config = require('./config')
 const provider = require('./provider')
 const chatbot = require('./chatbot')
 const autohuman = require('./autohuman')
+// Single AI tool-intent router: "darknote create a sticker of X" -> sticker tool.
+const intent = require('./intent')
 const memory = require('./memory')
 const language = require('./language')
 const timing = require('./timing')
@@ -486,6 +488,26 @@ async function runCommand(conn, m, command, args, reply, context = {}) {
  * slow provider never blocks the message pipeline.
  */
 async function handle(conn, m, context = {}) {
+    /*
+     * 1. AI TOOL REQUESTS FIRST.
+     *
+     * "darknote create a sticker of a black wolf" must reach the sticker tool,
+     * not be answered conversationally. This runs BEFORE autohuman and before the
+     * chatbot, so a tool request always wins however the other two are
+     * configured - and it runs whether or not `.chatbot` is on, because direct
+     * requests are supposed to keep working while the chatbot is off.
+     *
+     * `handled: false` means "not a tool request", and the message falls through
+     * to the conversational paths exactly as before.
+     */
+    try {
+        const routed = await intent.route(conn, m, context)
+        if (routed.handled) return routed
+    } catch (error) {
+        console.error('[AI] intent routing failed:', error?.stack || error)
+    }
+
+    // 2. Human-style continuation, when enabled and eligible.
     try {
         if (autohuman.enabled()) {
             const verdict = autohuman.evaluate(conn, m, context)
@@ -496,6 +518,8 @@ async function handle(conn, m, context = {}) {
     } catch (error) {
         console.error('[AI] autohuman hand-off failed:', error?.stack || error)
     }
+
+    // 3. Ordinary conversation.
     return chatbot.handle(conn, m, context)
 }
 

@@ -16,7 +16,7 @@
     "timeoutMs": 20000
   },
   "protectedBlockJids": [],
-  "mode": "self",
+  "mode": "public",
   "prefix": ".",
   "ownerName": "Bigbrother",
   "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
@@ -51,7 +51,7 @@
     "provider": "router",
     "baseUrl": "https://www.mzazi.shop",
     "endpoint": "https://www.mzazi.shop/api/ai/gpt-5",
-    "chatbotEnabled": false,
+    "chatbotEnabled": true,
     "dmEnabled": true,
     "groupEnabled": true,
     "typingEnabled": true,
