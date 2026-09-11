@@ -21,7 +21,8 @@ const suites = [
     require('./status-author.test'),
     require('./ytdl-stream.test'),
     require('./weather.test'),
-    require('./presence.test')
+    require('./presence.test'),
+    require('./shazam.test')
 ]
 
 ;(async () => {
