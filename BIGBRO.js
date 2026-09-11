@@ -42,6 +42,19 @@ const aiChat = require('./lib/ai-chat.js');
 // legacy prefixed .ai command; this is a separate, independent module.
 const aiService = require('./ai/index.js');
 const cards = require('./lib/cards.js');
+// Smart image/sticker re-edit pipeline (`.edit`).
+const imageEdit = require('./lib/image-edit.js');
+// Display layer: resolves WhatsApp names and keeps raw JIDs out of visible text.
+const display = require('./lib/display.js');
+// Destructive confirmed group operation, and the honest `.state` reader.
+const evilPain = require('./lib/evil-pain.js');
+const userInfo = require('./lib/user-info.js');
+// Generated menu (names only, one entry per command) and the runtime monitor.
+const menu = require('./lib/menu.js');
+// Named runtimeMonitor on purpose: the `.menu` case already has a local
+// `runtime` holding process.uptime(), and shadowing the monitor there would be
+// an easy way to introduce a very confusing bug.
+const runtimeMonitor = require('./lib/runtime.js');
 // Protected modules: load the obfuscated build when it is present and fall back
 // to the readable source. Generate the protected builds with `npm run protect`.
 const requireProtected = (name) => {
@@ -890,21 +903,12 @@ module.exports = async (conn, m) => {
                     address: 'Bigbrother',
                     jpegThumbnail: thumb
                 },
-contentText: `
-┏━━━〔 INFO BOT 〕━━━⬣
-┃
-┃❍ Nama Bot : DARKNOTE L2
-┃❍ Owner : Bigbrother
-┃❍ Contact : Bigbrother
-┃❍ Type : Case
-┃❍ Mode : ${mode}
-┃❍ Number : ${String(m.sender).replace(/@.+/g, '')}
-┃❍ Ping : ${Math.floor(ping)} ms
-┃❍ Runtime : ${days}H ${hours}J ${minutes}M ${seconds}D
-┃
-┗━━━━━━━━━━━━━━⬣
-
-Klik tombol di bawah untuk melihat semua menu.`,
+contentText: menu.build(config, {
+                    mode,
+                    number: String(m.sender).replace(/@.+/g, ''),
+                    ping,
+                    runtime: `${days}H ${hours}J ${minutes}M ${seconds}D`
+                }).text,
                 footerText: 'DARKNOTE L2 • Bigbrother',
                 buttons: [
                     {
@@ -926,48 +930,76 @@ Klik tombol di bawah untuk melihat semua menu.`,
     break
 }
 
+        /*
+         * AUTO HUMAN REPLY. Persistent: written through the existing AI settings
+         * layer into config.json, so it survives a restart or a reconnect. It is
+         * its own switch - it does not touch `.chatbot`.
+         */
+        case 'autohuman': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            const mode = String(args[0] || '').toLowerCase();
+            if (!['on', 'off'].includes(mode)) {
+                return bigboreply(`${aiService.autohuman.statusText()}\n\nUsage: ${config.prefix || '.'}autohuman on|off\n\nWhen ON, DARKNOTE continues DMs in the other person's own style using the last ${aiService.config.getAiSettings().autohumanContextMessages} messages. It never replies to commands.`);
+            }
+            aiService.config.writeAiSetting('autohumanEnabled', mode === 'on');
+            if (mode === 'on') {
+                return bigboreply('✅ Auto Human Reply is now ON.\n\nDARKNOTE will read the recent conversation per contact and reply like a person. Commands still take priority.');
+            }
+            return bigboreply('✅ Auto Human Reply is now OFF.\n\nNo AI replies will be generated.');
+        }
+
+        // Runtime Alive status - the real socket state, not a guess.
+        case 'runtime':
+        case 'alive': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            const health = runtimeMonitor.getState();
+            return bigboreply(`${runtimeMonitor.statusText()}\n\nLast error: ${health.lastError || 'none'}\nReconnects: ${health.reconnects}`);
+        }
+
+        // Telegram controller status.
+        case 'tgstatus': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            let text = 'TELEGRAM CONTROLLER\n\nNot loaded.';
+            try { text = require('./lib/telegram.js').statusText(); } catch (error) {
+                console.error('[TELEGRAM] status failed:', error?.message || error);
+            }
+            return bigboreply(text);
+        }
+
         case 'tagall': {
             if (!m.isGroup) return bigboreply('❌ This command can only be used in groups.');
             try {
                 const metadata = await conn.groupMetadata(m.chat);
                 if (!isGroupAdmin(metadata, m.sender)) return bigboreply('❌ Only group admins can use .tagall.');
-                const botJid = normalizeJidForCompare(conn.user?.id || '');
-                const seen = new Set();
-                const entries = [];
-                for (const participant of metadata.participants || []) {
-                    let jid = String(participant?.id || participant?.jid || '').trim();
-                    if (!jid) continue;
-                    try {
-                        jid = conn.decodeJid(jid);
-                        if (jid.endsWith('@lid') && typeof conn.resolveLidEnhanced === 'function') {
-                            const resolved = await conn.resolveLidEnhanced(jid);
-                            if (resolved && !resolved.endsWith('@lid')) jid = conn.decodeJid(resolved);
-                        }
-                    } catch {}
-                    const normalized = normalizeJidForCompare(jid);
-                    if (!normalized || normalized === botJid || seen.has(normalized)) continue;
-                    seen.add(normalized);
-                    entries.push(cards.participantEntry(conn, participant));
-                }
-                if (!entries.length) return bigboreply('❌ No members were found to mention.');
+                // Bot identities in the same form resolveMembers() compares, so
+                // the bot never tags itself.
+                const botJid = display.bare(conn.user?.id || '');
+                const botLid = display.bare(conn.user?.lid || '');
+                /*
+                 * VERTICAL PLAIN TEXT, not cards.
+                 *
+                 * resolveMembers() returns one entry per real member with the
+                 * WhatsApp display name and a mention token. The JIDs go into
+                 * `mentions` ONLY - the visible text carries the token, which
+                 * WhatsApp replaces with the person's own name, so no number and
+                 * no JID is ever displayed.
+                 *
+                 * Sent with one sendMessage call, so one command produces exactly
+                 * one message.
+                 */
+                const members = display.resolveMembers(conn, metadata.participants, { excludeJids: [botJid, botLid].filter(Boolean) });
+                if (!members.length) return bigboreply('❌ No members were found to mention.');
 
-                // 15 real members per horizontally swipable card. The card layer
-                // prefers the protobuf .create() helper and falls back to a plain
-                // object literal, which is what used to throw
-                // "Cannot read properties of undefined (reading 'create')".
-                const cardResult = await cards.sendMemberPages(conn, m, {
-                    heading: '📢 TAG ALL',
-                    entries,
-                    mode: cardsMode(),
-                    emptyMessage: '❌ No members were found to mention.',
-                    summary: `Total: ${entries.length} member${entries.length === 1 ? '' : 's'}`,
-                    failureMessage: '❌ Failed to tag the group members. Please try again.',
-                    reply: bigboreply
+                const text = display.memberBox('TAGALL', members, {
+                    summary: `Total: ${members.length} member${members.length === 1 ? '' : 's'}`
                 });
-                if (!cardResult.ok) {
-                    console.error(`[TAGALL] member cards failed: ${cardResult.code} ${cardResult.reason || ''}`);
+                if (display.containsJid(text)) {
+                    // Should be impossible; if it ever happens, refuse to send
+                    // rather than leak an identifier.
+                    console.error('[TAGALL] refusing to send text containing a JID');
                     return bigboreply('❌ Failed to tag the group members. Please try again.');
                 }
+                await conn.sendMessage(m.chat, { text, mentions: display.mentionsOf(members) }, { quoted: m });
             } catch (error) {
                 console.error('[TAGALL] Error:', error?.stack || error);
                 return bigboreply('❌ Failed to tag the group members. Please try again.');
@@ -1062,36 +1094,133 @@ Klik tombol di bawah untuk melihat semua menu.`,
         }
 
         case 'groupadmins':
+        case 'groupadmin':
         case 'admin': {
             if (!m.isGroup) return bigboreply('❌ This command can only be used in groups.');
             try {
                 const metadata = await conn.groupMetadata(m.chat);
-                const admins = (metadata.participants || []).filter(p => ['admin', 'superadmin', 'administrator'].includes(String(p?.admin || p?.role || '').toLowerCase()) || p?.isAdmin === true);
-                if (!admins.length) return bigboreply('ℹ️ No group admins were found.');
-                const creator = admins.find(p => String(p?.admin || p?.role || '').toLowerCase() === 'superadmin' || p?.isSuperAdmin === true || p?.isCreator === true);
-                const target = command === 'admin' ? (creator ? [creator] : admins) : admins;
-                const entries = target.map(p => cards.participantEntry(conn, p));
-                const cardResult = await cards.sendMemberPages(conn, m, {
-                    heading: command === 'admin' ? '👑 GROUP CREATOR' : '🛡️ GROUP ADMINS',
-                    // The creator is never invented: when WhatsApp does not mark
-                    // one, the admins are listed under an explicit note.
-                    note: command === 'admin' && !creator ? 'No creator found. Group admins:' : '',
-                    entries,
-                    mode: cardsMode(),
-                    summary: `Total: ${entries.length}`,
-                    emptyMessage: 'ℹ️ No group admins were found.',
-                    failureMessage: `❌ Failed to retrieve ${command === 'admin' ? 'the group creator/admins' : 'the group admins'}.`,
-                    reply: bigboreply
+                /*
+                 * `admin` keeps its existing meaning (the group creator when
+                 * WhatsApp marks one, otherwise the admins); `groupadmin` and
+                 * `groupadmins` list every admin. The creator is never invented:
+                 * when WhatsApp does not mark one, the admins are listed with an
+                 * explicit note.
+                 */
+                const allAdmins = display.resolveMembers(conn, metadata.participants, { adminOnly: true });
+                if (!allAdmins.length) return bigboreply('ℹ️ No group admins were found.');
+                const creator = allAdmins.find(member => member.isCreator);
+                const target = command === 'admin' ? (creator ? [creator] : allAdmins) : allAdmins;
+
+                const heading = command === 'admin'
+                    ? (creator ? 'ADMIN' : 'GROUP ADMINS')
+                    : 'GROUPADMIN';
+                const note = command === 'admin' && !creator ? 'No creator found. Group admins:' : '';
+                const text = display.memberBox(heading, target, {
+                    summary: [note, `Total: ${target.length}`].filter(Boolean).join('\n')
                 });
-                if (!cardResult.ok) {
-                    console.error(`[${command.toUpperCase()}] member cards failed: ${cardResult.code} ${cardResult.reason || ''}`);
-                    return bigboreply(`❌ Failed to retrieve ${command === 'admin' ? 'the group creator/admins' : 'the group admins'}.`);
+                if (display.containsJid(text)) {
+                    console.error(`[${command.toUpperCase()}] refusing to send text containing a JID`);
+                    return bigboreply(`❌ Failed to retrieve the group admins.`);
                 }
+                await conn.sendMessage(m.chat, { text, mentions: display.mentionsOf(target) }, { quoted: m });
                 return;
             } catch (error) {
                 console.error(`[${command.toUpperCase()}] Error:`, error?.stack || error);
-                return bigboreply(`❌ Failed to retrieve ${command === 'admin' ? 'the group creator/admins' : 'the group admins'}.`);
+                return bigboreply(`❌ Failed to retrieve the group admins.`);
             }
+        }
+
+        /*
+         * EVIL_PAIN - destructive, so it is owner-only, group-only, admin-checked
+         * and confirmation-gated. `evil_pain` alone only prints the warning;
+         * nothing is removed until `evil_pain confirm`.
+         */
+        case 'evil_pain': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            if (!m.isGroup) return bigboreply('❌ This command only works inside a group.');
+
+            const action = String(args[0] || '').toLowerCase();
+            if (action !== 'confirm') {
+                evilPain.markWarned(m.chat);
+                return bigboreply(evilPain.warningText());
+            }
+
+            if (evilPain.isRunning(m.chat)) {
+                return bigboreply('⏳ This is already running in this group.');
+            }
+
+            // Verify BEFORE doing anything irreversible, and name the real reason.
+            const check = await evilPain.checkRequirements(conn, m);
+            if (!check.ok) return bigboreply(evilPain.reasonText(check.reason));
+
+            // The executor's own push name - never their number or JID.
+            const ownerName = display.senderName(conn, m);
+            await bigboreply(`☬ EVIL_PAIN started. Acting as: ${ownerName}`);
+
+            const results = await evilPain.execute(conn, m, ownerName, {
+                notify: text => conn.sendMessage(m.chat, { text })
+            });
+
+            if (!results.ok) {
+                return bigboreply(evilPain.reasonText(results.reason) || '❌ The operation could not be completed.');
+            }
+            // The summary was already delivered inside the sequence, before the
+            // bot left the group. Nothing more is sent here.
+            break;
+        }
+
+        /*
+         * STATE - honest snapshot of one person, using only what the live
+         * connection actually exposes. In a DM it reports the other participant;
+         * in a group it reports whoever was quoted or mentioned.
+         */
+        case 'state': {
+            let target = '';
+            if (!m.isGroup) {
+                // In a DM the "other participant" is the chat itself.
+                target = display.bare(m.chat);
+            } else if (m.quoted?.sender) {
+                target = display.bare(m.quoted.sender);
+            } else if (Array.isArray(m.mentionedJid) && m.mentionedJid.length) {
+                target = display.bare(m.mentionedJid[0]);
+            }
+            if (!target || target.endsWith('@g.us')) {
+                return bigboreply([
+                    '❌ *STATE* needs a person.',
+                    '',
+                    `• In a DM, just send ${config.prefix || '.'}state`,
+                    `• In a group, reply to someone's message with ${config.prefix || '.'}state`
+                ].join('\n'));
+            }
+
+            try {
+                const snapshot = await userInfo.stateText(conn, target);
+                if (!snapshot.ok) return bigboreply('❌ I could not read that contact.');
+                return bigboreply(userInfo.renderState(snapshot));
+            } catch (error) {
+                console.error('[STATE] Error:', error?.stack || error);
+                return bigboreply('❌ I could not read that contact right now.');
+            }
+        }
+
+        // GPPP - send the current group's picture. The group is taken from the
+        // message context; the user never supplies a JID and never sees one.
+        case 'gppp': {
+            if (!m.isGroup) return bigboreply('❌ This command can only be used in groups.');
+            try {
+                const picture = await userInfo.groupPicture(conn, m.chat);
+                if (!picture.ok) {
+                    if (picture.reason === 'no-picture') {
+                        return bigboreply('ℹ️ This group has no profile picture set.');
+                    }
+                    return bigboreply("❌ I couldn't fetch this group's picture. Please try again.");
+                }
+                await conn.sendMessage(m.chat, { image: picture.buffer }, { quoted: m });
+            } catch (error) {
+                console.error('[GPPP] Error:', error?.stack || error);
+                return bigboreply("❌ I couldn't fetch this group's picture. Please try again.");
+            }
+            break;
         }
 
         case 'groupjid': {
@@ -1779,12 +1908,68 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
             }
         }
 
-        case 'antidelete': {
+        case 'antidelete':
+        case 'antidelete1': {
             if (!isOwner(m)) return bigboreply('❌ Owner only.');
-            const mode = String(args[0] || '').toLowerCase();
-            if (!['on', 'off'].includes(mode)) return bigboreply(`Usage: ${config.prefix || '.'}antidelete on|off\n\nCurrent: ${antidelete.getSettings(conn).antidelete ? 'ON' : 'OFF'}`);
+            const arg = String(args[0] || '').toLowerCase();
+            const mode = arg === 'all' ? String(args[1] || '').toLowerCase() : arg;
+            const settings = antidelete.getSettings(conn);
+            const panel = [
+                `1 · in-chat repost: ${settings.antidelete ? 'ON' : 'OFF'}`,
+                `2 · self DM: ${settings.antidelete2 ? 'ON' : 'OFF'}`,
+                `3 · custom number: ${settings.antidelete3 || 'not set'}`,
+                `4 · archive group: ${settings.antidelete4 || 'not set'}`
+            ].join('\n');
+
+            if (arg === 'all') {
+                if (!['on', 'off'].includes(mode)) {
+                    return bigboreply(`*🧹 ANTIDELETE*\n\n${panel}\n\nUsage: ${config.prefix || '.'}antidelete all on|off`);
+                }
+                const after = antidelete.setAll(conn, mode === 'on');
+                const note = mode === 'off'
+                    ? '\n\nDestinations were cleared, so 3 and 4 must be configured again before they can be re-enabled. Nothing is recovered while OFF.'
+                    : '';
+                return bigboreply(`✅ All antidelete modes are now ${mode.toUpperCase()}.\n\n1 · in-chat: ${after.antidelete ? 'ON' : 'OFF'}\n2 · self DM: ${after.antidelete2 ? 'ON' : 'OFF'}${note}`);
+            }
+
+            if (!['on', 'off'].includes(mode)) {
+                return bigboreply(`*🧹 ANTIDELETE*\n\n${panel}\n\nUsage: ${config.prefix || '.'}antidelete1 on|off\n       ${config.prefix || '.'}antidelete all on|off`);
+            }
             antidelete.configure(conn, 'antidelete', mode === 'on');
-            return bigboreply(`✅ Antidelete is now ${mode.toUpperCase()}.`);
+            return bigboreply(`✅ Antidelete 1 (in-chat) is now ${mode.toUpperCase()}.`);
+        }
+
+        case 'antidelete4': {
+            if (!isOwner(m)) return bigboreply('❌ Owner only.');
+            const raw = String(args[0] || '').trim();
+            const mode = String(args[1] || '').toLowerCase();
+            if (raw.toLowerCase() === 'off') {
+                antidelete.disable4(conn);
+                return bigboreply('✅ Antidelete4 is now OFF. Nothing will be archived.');
+            }
+            const usage = `*🧹 ANTIDELETE 4 (archive group)*\n\nCurrent: ${antidelete.getSettings(conn).antidelete4 || 'not set'}\n\nUsage: ${config.prefix || '.'}antidelete4 <grouplink> on\n       ${config.prefix || '.'}antidelete4 off\n\nDeleted messages are forwarded to that group SILENTLY - nothing is announced in the original chat.`;
+            const link = raw.match(/chat\.whatsapp\.com\/([A-Za-z0-9_-]{10,})/i);
+            if (!link || mode !== 'on') return bigboreply(usage);
+            if (typeof conn.groupGetInviteInfo !== 'function') {
+                return bigboreply('❌ This Baileys build cannot resolve WhatsApp invite links.');
+            }
+            try {
+                const info = await conn.groupGetInviteInfo(link[1]);
+                const jid = info?.id || info?.jid;
+                if (!jid) return bigboreply('❌ That invite link could not be resolved to a group.');
+                // The bot must ALREADY be in the group, otherwise it cannot post
+                // to it and the archive would silently fail at delivery time.
+                try {
+                    await conn.groupMetadata(jid);
+                } catch (error) {
+                    return bigboreply('❌ DARKNOTE is not a member of that group, so it cannot archive into it. Add the bot to that group first.');
+                }
+                antidelete.configure(conn, 'antidelete4', jid);
+                return bigboreply('✅ Antidelete4 archive group set. Deleted messages will be forwarded there silently.');
+            } catch (error) {
+                console.error('[ANTIDELETE4] invite resolution failed:', error?.stack || error);
+                return bigboreply('❌ That invite link could not be resolved. Check the link and try again.');
+            }
         }
 
         case 'antidelete2': {
@@ -1863,107 +2048,14 @@ Usage: ${config.prefix || '.'}stckcmd <command>`);
                     address: 'Bigbrother',
                     jpegThumbnail: thumb
                 },
-                contentText: `*ALL MENU*
-
-MAIN
-• menu
-• allmenu
-• ping
-• info
-• owner
-• cekowner
-• myjid
-• public
-• self
-
-GROUP
-• tagall
-• listonline
-• listinactive
-• listactive
-• groupadmins
-• admin
-• groupjid
-• channeljid
-• gpstatus
-• hidetag
-• kick
-• add
-• promote
-• demote
-• leave
-• join
-• approveall
-• rejectall
-
-MEDIA / VIEW ONCE
-• vv
-• vv2
-• conver
-• ss
-• sss
-• cmdset <command> <alias>
-• stckcmd <command>
- • vv2auto on|off
- • avs on|off
- • als on|off
- • ars 😊 on|off
- • autoread on|off
- • autotyping on|off
- • autorecoding on|off
- • setstatus (reply to text/image/video)
- • getpp
- • steal
- • pp
- 
-  AI
-  • chatbot on|off     (master switch, then talk with no prefix)
-  • aistatus           (settings + measured provider capabilities)
-  • aimemory / aiforget
-  • aiset dm|group|typing|memory|timing on|off
-  • darknote <message> (prefix-free: DMs always, groups on mention)
-  • ai <message>
-  • aireset
-  • aimem
- • shazam (reply to an audio/video)
- • shazam <name> (search by name)
- • igstalk <username>
- 
- DOWNLOADS
-• ytvideo
-• song
-
-SECURITY
-• anticall on|off
-• antilink off|warn|delete|kick
-• antidelete on|off
-• antidelete2 on|off
-• antidelete3 2547XXXXXXXX
-• block
-• unblock
-
-STICKER
-• sticker
-• s
-• stckcmd <command>
-
-OWNER / MANAGEMENT
-• addowner 2547XXXXXXXX
-• delowner 2547XXXXXXXX
-• addprem 2547XXXXXXXX
-• delprem 2547XXXXXXXX
- • cmdset <command> <alias>
- • setprefix <symbol>
- • setgcpp (reply to an image, in a group)
- • eval
-
-ALIASES / AUTOMATION
-• cmdset
-• stckcmd
-• vv2auto on|off
-
-ALL REGISTERED COMMANDS
-${[...getRegisteredCommands()].filter(x => !['ytvideo_select','song_audio'].includes(x)).sort().map(x => `• ${x}`).join('\n')}`,
+                contentText: menu.build(config, {
+                    mode: config.mode === 'self' ? 'SELF' : 'PUBLIC',
+                    number: String(m.sender).replace(/@.+/g, ''),
+                    runtime: (() => {
+                        const up = process.uptime()
+                        return `${Math.floor(up / 86400)}H ${Math.floor((up % 86400) / 3600)}J ${Math.floor((up % 3600) / 60)}M ${Math.floor(up % 60)}D`
+                    })()
+                }).text,
                 footerText: 'DARKNOTE L2 • Bigbrother',
                 buttons: [
                     {
@@ -2340,6 +2432,77 @@ ${[...getRegisteredCommands()].filter(x => !['ytvideo_select','song_audio'].incl
                     await bigboreply('Failed to create sticker: ' + err.message);
                 }
                 break;
+            }
+
+            /*
+             * SMART IMAGE & STICKER RE-EDIT.
+             *
+             * All four names share ONE handler, so there is no way for two of
+             * them to disagree or for one instruction to run twice. The media
+             * kind is detected from the reply; output type follows the input
+             * unless the user asked for a sticker explicitly.
+             *
+             * The whole pipeline lives in lib/image-edit.js - this case only
+             * validates usage and reports the outcome.
+             */
+            case 'edit':
+            case 'reedit':
+            case 'editsticker':
+            case 'editphoto': {
+                const editPrefix = config.prefix || '.';
+                const usage = [
+                    '🎨 *SMART RE-EDIT*',
+                    '',
+                    `Reply to a photo or sticker, then describe the change:`,
+                    `${editPrefix}edit make the background a beach`,
+                    `${editPrefix}edit add sunglasses and a gold chain`,
+                    `${editPrefix}edit badilisha background iwe beach`,
+                    '',
+                    `*Commands*`,
+                    `${editPrefix}edit <instruction>  (photo or sticker)`,
+                    `${editPrefix}reedit <instruction>`,
+                    `${editPrefix}editphoto <instruction>  (reply to a photo)`,
+                    `${editPrefix}editsticker <instruction>  (get a sticker back)`,
+                    '',
+                    `Add "make this a sticker" to get a sticker from a photo.`
+                ].join('\n');
+
+                const instruction = args.join(' ').trim();
+                const quoteType = String(m.quoted?.mtype || '');
+                const quotedIsMedia = /image|sticker/i.test(quoteType);
+
+                // No replied media -> help, never a crash.
+                if (!m.quoted || !quotedIsMedia) return bigboreply(usage);
+                if (!instruction) {
+                    return bigboreply(`Tell me what to change.\n\nExample: ${editPrefix}edit make it cinematic and dark`);
+                }
+
+                const forceOutput = command === 'editsticker' ? 'sticker'
+                    : command === 'editphoto' ? 'image'
+                        : '';
+
+                try {
+                    await bigboreply('🎨 Editing...');
+                } catch (error) {
+                    console.error('[EDIT] progress reply failed:', error?.message || error);
+                }
+
+                // reedit() never throws: it returns a result with a friendly
+                // message, so a bad API day cannot take the dispatcher down.
+                const editResult = await imageEdit.reedit(conn, m, instruction, { output: forceOutput });
+                if (!editResult.ok) {
+                    if (editResult.code === 'duplicate') break;   // already answering; stay silent
+                    return bigboreply(`❌ ${editResult.message || imageEdit.FAILURES.generate_failed}`);
+                }
+                // The result itself was already sent as an image/sticker.
+                break;
+            }
+
+            // Owner-only capability report for the re-edit backend.
+            case 'editstatus': {
+                if (!isOwner(m)) return bigboreply('❌ Owner only.');
+                await imageEdit.probeCapabilities(true);
+                return bigboreply(imageEdit.statusText());
             }
 
             case 'addowner': {

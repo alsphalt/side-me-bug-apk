@@ -27,6 +27,7 @@
 const config = require('./config')
 const provider = require('./provider')
 const chatbot = require('./chatbot')
+const autohuman = require('./autohuman')
 const memory = require('./memory')
 const language = require('./language')
 const timing = require('./timing')
@@ -473,9 +474,35 @@ async function runCommand(conn, m, command, args, reply, context = {}) {
     return false
 }
 
+/*
+ * THE SINGLE AI ENTRY POINT.
+ *
+ * `.autohuman` has its own switch, so it is tried first: it must work whether or
+ * not the public chatbot is on. When it is off - which is the default - this is
+ * exactly the previous `chatbot.handle`, so nothing that already worked changes
+ * behaviour.
+ *
+ * Both paths return immediately and do their work in a detached task, so one
+ * slow provider never blocks the message pipeline.
+ */
+async function handle(conn, m, context = {}) {
+    try {
+        if (autohuman.enabled()) {
+            const verdict = autohuman.evaluate(conn, m, context)
+            if (verdict.ok) return autohuman.handle(conn, m, context)
+            // Not eligible for a human-style reply. Fall through to the normal
+            // chatbot so an existing `.chatbot on` setup keeps working.
+        }
+    } catch (error) {
+        console.error('[AI] autohuman hand-off failed:', error?.stack || error)
+    }
+    return chatbot.handle(conn, m, context)
+}
+
 module.exports = {
     // orchestration
-    handle: chatbot.handle,
+    handle,
+    autohuman,
     evaluate: chatbot.evaluate,
     clearAllBatches: chatbot.clearAllBatches,
     pendingCount: chatbot.pendingCount,

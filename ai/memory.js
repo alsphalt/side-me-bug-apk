@@ -110,9 +110,26 @@ function emptySession(key) {
         // can deliberately be served by a DIFFERENT provider.
         lastQ: '',
         lastA: '',
-        lastProvider: ''
+        lastProvider: '',
+        /*
+         * Chronological transcript of BOTH directions: what they said and what
+         * we said, in order, reconstructed into one conversation. turnsList
+         * stores question/answer PAIRS, which is the wrong shape for reading the
+         * flow of a chat - `.autohuman` needs the actual back-and-forth to copy
+         * the tone. Lives in this same session object on purpose, so it inherits
+         * the existing TTL expiry, max-session cap and atomic write instead of
+         * growing a second store.
+         */
+        transcript: []
     }
 }
+
+/*
+ * The transcript is retention, not context: the prompt builder takes only the
+ * most recent `autohumanContextMessages`. A little more than that is kept so a
+ * window is always full even if some entries were media with no text.
+ */
+const TRANSCRIPT_KEEP = 60
 
 function getSession(key) {
     if (!key) return emptySession('')
@@ -130,8 +147,39 @@ function getSession(key) {
         summary: typeof found.summary === 'string' ? found.summary : '',
         lastQ: typeof found.lastQ === 'string' ? found.lastQ : '',
         lastA: typeof found.lastA === 'string' ? found.lastA : '',
-        lastProvider: typeof found.lastProvider === 'string' ? found.lastProvider : ''
+        lastProvider: typeof found.lastProvider === 'string' ? found.lastProvider : '',
+        transcript: Array.isArray(found.transcript)
+            ? found.transcript.filter(t => t && typeof t === 'object' && typeof t.t === 'string').slice(-TRANSCRIPT_KEEP)
+            : []
     }
+}
+
+/**
+ * Append one line to the contact's transcript.
+ *
+ * `who` is 'them' for the other person and 'me' for the paired account. Keeping
+ * the speaker explicit is what lets the prompt show the model which side of the
+ * conversation it is continuing.
+ */
+function appendTranscript(key, { who, text }, settings) {
+    if (!key) return false
+    const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 400)
+    if (!clean) return false
+    const session = getSession(key)
+    session.transcript.push({ who: who === 'me' ? 'me' : 'them', t: clean, at: Date.now() })
+    if (session.transcript.length > TRANSCRIPT_KEEP) {
+        session.transcript = session.transcript.slice(-TRANSCRIPT_KEEP)
+    }
+    saveSession(session, settings)
+    return true
+}
+
+/** The most recent `limit` transcript lines, oldest first. */
+function recentTranscript(key, limit = 15) {
+    if (!key) return []
+    const session = getSession(key)
+    const n = Math.max(1, Number(limit) || 15)
+    return session.transcript.slice(-n)
 }
 
 function saveSession(session, settings) {
@@ -426,6 +474,9 @@ module.exports = {
     recordExchange,
     needsSummary,
     turnsToSummarise,
+    // chronological transcript (auto human reply context window)
+    appendTranscript,
+    recentTranscript,
     // repeat + variation
     similarity,
     isRepeat,

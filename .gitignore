@@ -22,3 +22,9 @@ database/ai-memory.json
 # the owner store. They were only conditionally ignored before, which would have
 # published third-party conversations to a public repository.
 database/
+
+# Telegram-paired WhatsApp sessions. Each holds a full set of Baileys
+# credentials for a linked account, exactly like auth/ above - so they must
+# never be committed either. Written as a glob because the controller creates one
+# directory per Telegram user (auth_tg_<userId>).
+auth_tg_*/

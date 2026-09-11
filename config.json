@@ -22,7 +22,7 @@
   "channelLink": "https://whatsapp.com/channel/REPLACE_WITH_YOUR_CHANNEL",
   "vv2Auto": false,
   "anticall": false,
-  "antilink": "off",
+  "antilink": "kick",
   "autoread": false,
   "autotyping": true,
   "autorecoding": false,
@@ -102,7 +102,11 @@
       "image": false,
       "sticker": false,
       "imagesearch": false
-    }
+    },
+    "autohumanEnabled": false,
+    "autohumanAnalyseMs": 3000,
+    "autohumanGenerateMs": 4000,
+    "autohumanPreSendMs": 2000
   },
   "cmdAliases": {
     "254107287140": {}
@@ -114,17 +118,8 @@
     "254107287140": {
       "antidelete": false,
       "antidelete2": false,
-      "antidelete3": ""
-    },
-    "254700000001": {
-      "antidelete": true,
-      "antidelete2": true,
-      "antidelete3": ""
-    },
-    "254700000002": {
-      "antidelete": false,
-      "antidelete2": true,
-      "antidelete3": ""
+      "antidelete3": "",
+      "antidelete4": ""
     }
   },
   "statusAutomation": {
@@ -167,5 +162,8 @@
     "enforcement": {
       "kick": true
     }
+  },
+  "telegram": {
+    "maxSessions": 3
   }
 }

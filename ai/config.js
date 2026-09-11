@@ -236,6 +236,28 @@ function getAiSettings() {
         ownerLongDelayMinMs: pickNum('AI_OWNER_LONG_DELAY_MIN', ai.ownerLongDelayMin, 10, 0, 600) * 1000,
         ownerLongDelayMaxMs: pickNum('AI_OWNER_LONG_DELAY_MAX', ai.ownerLongDelayMax, 20, 0, 600) * 1000,
 
+        /* --- auto human reply ------------------------------------------------ */
+        /*
+         * `.autohuman` - a conversation CONTINUER, not an assistant.
+         *
+         * Defaults to FALSE, deliberately. The brief is explicit that a feature
+         * must stay off until the owner turns it on, so a fresh install (or a
+         * config with no autohuman key) never starts talking to anyone's
+         * contacts on its own.
+         */
+        autohumanEnabled: pickBool('AI_AUTOHUMAN_ENABLED', ai.autohumanEnabled, false),
+        // How many recent messages form the context window. The brief asks for
+        // "approximately the last 15", so 15 is the default and it is clamped to
+        // a sane range rather than trusted blindly.
+        autohumanContextMessages: pickNum('AI_AUTOHUMAN_CONTEXT_MESSAGES', ai.autohumanContextMessages, 15, 4, 40),
+        // Human-like pacing, in the three stages the brief describes.
+        // 3s analysis + 4s generation + 2s pre-send sits in the 7-10s target.
+        autohumanAnalyseMs: pickNum('AI_AUTOHUMAN_ANALYSE_MS', ai.autohumanAnalyseMs, 3000, 0, 30000),
+        autohumanGenerateMs: pickNum('AI_AUTOHUMAN_GENERATE_MS', ai.autohumanGenerateMs, 4000, 0, 30000),
+        autohumanPreSendMs: pickNum('AI_AUTOHUMAN_PRESEND_MS', ai.autohumanPreSendMs, 2000, 0, 30000),
+        // Mark the incoming message as read before replying.
+        autohumanReadReceipt: pickBool('AI_AUTOHUMAN_READ_RECEIPT', ai.autohumanReadReceipt, true),
+
         /* --- public chatbot behaviour ---------------------------------------- */
         // How long after the AI's OWN message it may continue the conversation
         // if the person goes quiet. NOT the reply delay.
@@ -329,6 +351,9 @@ function writeAiSetting(key, value) {
 
 module.exports = {
     getAiSettings,
+    // Exported so the Telegram controller reads TELEGRAM_BOT_TOKEN through the
+    // SAME .env loader as everything else, instead of growing a second one.
+    loadEnvOnce,
     isUsable,
     describe,
     writeAiSetting,

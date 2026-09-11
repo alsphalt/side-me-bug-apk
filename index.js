@@ -27,8 +27,26 @@ const rl = readline.createInterface({
 
 const question = (text) => new Promise((resolve) => rl.question(text, resolve))
 
-let reconnectTimeout = null
-let isReconnecting = false
+/*
+ * RUNTIME ALIVE owns the socket lifecycle: one socket, one reconnect timer with
+ * backoff, honest connection state, crash guards. See lib/runtime.js.
+ */
+const runtimeMonitor = require('./lib/runtime.js')
+let telegram = null
+try {
+    telegram = require('./lib/telegram.js')
+} catch (error) {
+    console.error('[TELEGRAM] controller could not be loaded:', error?.message || error)
+}
+
+runtimeMonitor.installGuards()
+runtimeMonitor.startMonitor()
+
+/*
+ * Guards against two concurrent connect attempts. The runtime also closes a
+ * superseded socket, so this is belt-and-braces rather than the only defence.
+ */
+let connectInFlight = false
 
 function reload(file) {
     const filePath = path.resolve(file)
@@ -60,9 +78,20 @@ reload('./BIGBRO.js')
 reload('./lib/msg.js')
 
 async function connectToWhatsApp() {
-    if (isReconnecting) return
-    isReconnecting = true
+    if (connectInFlight) {
+        console.log('[RUNTIME] a connect is already in progress; duplicate ignored')
+        return
+    }
+    connectInFlight = true
+    try {
+        await startSocket()
+    } finally {
+        connectInFlight = false
+    }
+}
 
+async function startSocket() {
+    runtimeMonitor.markConnecting('opening socket')
     const { state, saveCreds } = await useMultiFileAuthState('auth')
 
     const conn = makeWASocketSimple({
@@ -71,6 +100,14 @@ async function connectToWhatsApp() {
         browser: Browsers.ubuntu('Safari'),
         auth: state
     })
+
+    /*
+     * Claim the single socket slot. If a previous socket somehow survived, it is
+     * closed here BEFORE this one is used, which is what prevents two live
+     * WhatsApp connections on one session (duplicate replies, duplicate
+     * receipts, and eventually a forced logout).
+     */
+    runtimeMonitor.register(conn)
 
     bind(conn)
     bindDeleteEvents(conn)
@@ -168,28 +205,31 @@ async function connectToWhatsApp() {
             connectionState = 'closed'
             conn.__darknoteConnectionState = 'closed'
             stopPresenceUpdates()
+            // Only THIS socket may clear the shared flag. A stale socket closing
+            // after a newer one opened must not tell helpers the bot is offline.
+            if (runtimeMonitor.currentSocket() === conn) runtimeMonitor.unregister(conn)
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+            const reason = lastDisconnect?.error?.message || `status ${statusCode ?? 'unknown'}`
+            runtimeMonitor.markClosed(statusCode, reason)
+            runtimeMonitor.noteError(lastDisconnect?.error || reason)
 
-            console.log('Connection closed. Reconnecting:', shouldReconnect)
-
-            if (shouldReconnect) {
-                if (reconnectTimeout) clearTimeout(reconnectTimeout)
-
-                reconnectTimeout = setTimeout(() => {
-                    isReconnecting = false
-                    connectToWhatsApp().catch((error) => console.error('❌ Reconnect failed:', error))
-                }, 5000)
+            if (runtimeMonitor.isRecoverable(statusCode)) {
+                // One timer, exponential backoff, never sooner than 2s: a dead
+                // network cannot become a tight reconnect loop.
+                const delay = runtimeMonitor.scheduleReconnect(() =>
+                    connectToWhatsApp().catch((error) => console.error('❌ Reconnect failed:', error?.message || error))
+                )
+                console.log(`Connection closed (${reason}). Reconnecting in ${delay ? Math.round(delay / 1000) + 's' : 'n/a'}.`)
             } else {
-                console.log('🔒 Logged out. Automatic reconnect is disabled.')
-                isReconnecting = false
+                console.log('🔒 Logged out. Automatic reconnect is disabled until the session is paired again.')
             }
         } else if (connection === 'open') {
             connectionState = 'open'
             conn.__darknoteConnectionState = 'open'
             console.log('✅ Connected to WhatsApp')
+            runtimeMonitor.markOpen()
+            runtimeMonitor.cancelReconnect()
             startPresenceUpdates()
-            isReconnecting = false
 
             // Restore anything the previous run left scheduled. Done once the
             // socket is genuinely open, because every restore sends a presence
@@ -208,7 +248,17 @@ async function connectToWhatsApp() {
                 console.error('❌ Could not restore AI schedules:', error?.message || error)
             }
 
-            if (reconnectTimeout) clearTimeout(reconnectTimeout)
+            /*
+             * TELEGRAM CONTROL PANEL. `start()` is idempotent and returns
+             * "already-running" on every later call, so a WhatsApp reconnect can
+             * never spawn a second Telegram poller. A missing or rejected token
+             * disables it with a log line and never blocks the WhatsApp bot.
+             */
+            if (telegram) {
+                telegram.start().catch(error => {
+                    console.error('[TELEGRAM] start failed:', error?.message || error)
+                })
+            }
         }
     })
 
@@ -245,7 +295,10 @@ async function connectToWhatsApp() {
             console.log('════════════════════════════════════\n')
         } catch (error) {
             console.error('❌ Failed to request the WhatsApp pairing code:', error)
-            isReconnecting = false
+            // The session is unusable and retrying would loop forever against a
+            // server that keeps refusing, so this is the fatal path: report the
+            // real cause and let the panel supervisor restart the process.
+            runtimeMonitor.fatal('WhatsApp pairing code could not be requested', error)
             throw error
         }
     }
@@ -254,6 +307,9 @@ async function connectToWhatsApp() {
         try {
             let m = chatUpdate.messages[0]
             if (!m.message) return
+            // Feeds the Runtime Alive "last activity" figure. Cheap, and the only
+            // thing it affects is the health line.
+            runtimeMonitor.noteActivity()
             if (m.key?.remoteJid === 'status@broadcast') {
                 // Status automation intentionally stays inside the existing
                 // messages.upsert listener. The action queue enforces the
